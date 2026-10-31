@@ -19,11 +19,12 @@ Only people with a lozaip.com Microsoft 365 account may use the LL-Docx tools. T
 | What is stored | A renewable token (MSAL token cache), encrypted per Windows user. Passwords are never seen or stored |
 | Offline use | Allowed for 30 days after the last successful online check. Admins can lower this |
 | Scope | Gates every LL-Docx ribbon button, existing and new |
-| Configuration | Admin-controlled file plus an optional Group Policy registry override. Contains no secrets |
+| Configuration | lozaip.com values compiled into the signed add-in. The tenant ID can't be overridden; other values can be overridden only through admin-only Group Policy registry values. Contains no secrets |
+| Installation | One per-machine MSI with no sign-in at install time. Distributed by any means (file share, email, Group Policy, scripts). No dependency on Intune or any device-management tool |
 
 ## How it works
 
-1. When Word starts, the add-in loads its admin configuration. It then tries to renew the user's token silently on a background thread, so Word's startup is not delayed.
+1. When Word starts, the add-in loads its compiled configuration and any Group Policy overrides. It then tries to renew the user's token silently on a background thread, so Word's startup is not delayed.
 2. If no account is cached or renewal needs the user, the tools stay locked and the ribbon shows **Sign in**.
 3. **Sign in** opens the Microsoft sign-in window. That is the Windows account broker (WAM) where available, and the system browser otherwise. The window is restricted to the lozaip.com tenant and enforces whatever MFA and Conditional Access policies the tenant has.
 4. On success, the add-in checks that the account's tenant ID equals the configured tenant ID, records the time of the check, and unlocks the tools.
@@ -49,35 +50,44 @@ Only people with a lozaip.com Microsoft 365 account may use the LL-Docx tools. T
 
 ## Configuration
 
-**File:** `%ProgramData%\LL-Docx\lldocx.config.json`. The installer writes it from MSI properties. Users can read it; only administrators can change it.
+The values are compiled into the add-in as constants in `GateDefaults`. The add-in assembly is code-signed, so they can't be changed without breaking the signature.
 
-```json
-{
-  "tenantId": "00000000-0000-0000-0000-000000000000",
-  "clientId": "00000000-0000-0000-0000-000000000000",
-  "gatewayUrl": "https://lldocx-gateway.azurewebsites.net/api/deepcheck",
-  "gatewayScope": "api://00000000-0000-0000-0000-000000000000/DeepCheck.Use",
-  "offlineGraceDays": 30
-}
-```
+| Setting | Compiled default | Group Policy override (`HKLM\SOFTWARE\Policies\LL-Docx`) |
+|---|---|---|
+| `TenantId` | The lozaip.com Entra tenant ID | **Not overridable.** This stops the add-in from being pointed at another tenant |
+| `ClientId` | The add-in's Entra app registration (a public client) | `ClientId` (REG_SZ, must be a GUID) |
+| `GatewayUrl` | The Deep Check gateway endpoint (see the claims checker spec) | `GatewayUrl` (REG_SZ, must be `https://`) |
+| `GatewayScope` | `api://<gateway app ID>/DeepCheck.Use`. Requested at sign-in, so a single consent covers Deep Check | `GatewayScope` (REG_SZ) |
+| `OfflineGraceDays` | 30 | `OfflineGraceDays` (REG_DWORD). It can only **lower** the value, and is clamped to 1–30 |
 
-| Field | Meaning |
-|---|---|
-| `tenantId` | The lozaip.com Entra tenant ID. Used for the sign-in authority and the tenant check |
-| `clientId` | The add-in's Entra app registration (a public client) |
-| `gatewayUrl` | The Deep Check gateway endpoint (see the claims checker spec) |
-| `gatewayScope` | The gateway API scope. It is requested at sign-in, so a single consent covers Deep Check |
-| `offlineGraceDays` | 1–30. Values outside that range are clamped |
+- **Invalid overrides** are ignored and logged, and the compiled default is used.
+- **Changing the tenant** would need a rebuild, which is acceptable because lozaip.com's tenant doesn't change.
+- **The IDs and the tenant ID are filled in** during the build from the admin setup values (see below). Until real values exist, the build uses placeholder GUIDs, and the gate shows "LL-Docx is not configured".
+- **No secrets:** nothing here is secret. Someone who decompiles the add-in learns IDs that are useless without a lozaip.com sign-in.
 
-- **Group Policy override:** values under `HKLM\SOFTWARE\Policies\LL-Docx` with the same names (`TenantId`, `ClientId`, `GatewayUrl`, `GatewayScope`, `OfflineGraceDays`) override the file, one field at a time.
-- **Validation:** missing or invalid `tenantId` or `clientId` (they must be GUIDs) makes the configuration invalid, and the tools lock. A missing gateway setting only disables Deep Check.
-- **No secrets:** nothing in the configuration is secret. A user who reads it learns IDs that are useless without a lozaip.com sign-in.
+## Installation and deployment
+
+The same installer serves Microsoft 365 and standalone Office. The gate is independent of how Office is licensed, and installing requires no sign-in.
+
+- **One per-machine MSI** (WiX, `InstallScope="perMachine"`, needs administrator rights). Installing is as simple as double-clicking it. It can also be installed silently (`msiexec /i LLDOCXSetup.msi /qn`) through Group Policy software installation, a login script or any deployment tool. No tool is required.
+- **Registration for all users.** The add-in is registered under `HKLM\Software\Microsoft\Office\Word\Addins\LLDOCX`, so every user of the PC gets it. On 64-bit Windows it is registered in both the 64-bit and the `WOW6432Node` views, covering 64-bit and 32-bit Office. This fixes the current installer, which writes the registration to `HKCU` from a per-machine package, so only the user who ran it sees the add-in.
+- **Prerequisite checks:** the installer refuses to install, with a clear message, when any of these is missing:
+  - .NET Framework 4.7.2 or later;
+  - the VSTO 2010 runtime (`HKLM\SOFTWARE\Microsoft\VSTO Runtime Setup\v4R`, either view);
+  - Word 2016 or later.
+- **Code signing:** the add-in manifests and assemblies are signed with lozaip.com's production code-signing certificate, as is the MSI. The temporary development certificate (`LLDOCX_TemporaryKey.pfx`) is never used for a release and is never committed.
+- **Updates:** run a newer MSI. The existing `MajorUpgrade` element replaces the old version in place. Sign-in state (in the user profile) survives upgrades.
+- **Uninstalling** removes the files and the registration. Per-user sign-in data in `%LOCALAPPDATA%\LL-Docx` is left in place, and Sign out clears it.
+- **What users see:**
+  - Microsoft 365 users who are signed in to Windows or Office with their lozaip.com account usually finish the first sign-in silently or with one click, through the Windows account broker.
+  - Standalone Office users see the Microsoft sign-in window once.
+  - After that, both renew silently.
 
 ## Components
 
 | Component | Project | Responsibility |
 |---|---|---|
-| `GateConfig`, `GateConfigLoader` | LLDOCX.Auth (new, netstandard2.0) | Read the file, apply registry overrides, validate. File and registry access go through small interfaces so they can be tested |
+| `GateDefaults`, `GateConfig`, `GateConfigLoader` | LLDOCX.Auth (new, netstandard2.0) | Hold the compiled defaults, apply the allowed policy overrides and validate them. Registry access goes through a small interface so it can be tested |
 | `AccessPolicy`, `GateState`, `RenewalResult` | LLDOCX.Auth | The pure decision table above |
 | `LastVerifiedStore` | LLDOCX.Auth | Stores the last-verified time and account ID in `%LOCALAPPDATA%\LL-Docx\gate.dat`, encrypted with DPAPI (CurrentUser) |
 | `ITokenSource` | LLDOCX.Auth | `Task<RenewalOutcome> RenewSilentAsync(ct)`, `Task<RenewalOutcome> SignInInteractiveAsync(IntPtr parentHwnd, ct)`, `Task<string> GetGatewayTokenAsync(ct)`, `Task SignOutAsync()` |
@@ -97,11 +107,9 @@ Only people with a lozaip.com Microsoft 365 account may use the LL-Docx tools. T
    - Redirect URIs: `ms-appx-web://microsoft.aad.brokerplugin/{clientId}` and `http://localhost`.
 2. **Grant it access to the gateway API.** Give it the delegated permission `DeepCheck.Use` on the gateway API, and grant admin consent so users aren't prompted for consent.
 3. **Optionally restrict who can use LL-Docx.** On the enterprise application, set "Assignment required" and assign a security group. Then only members of that group can sign in, which lets you control access per person.
-4. **Install with the configuration values:**
-   ```
-   msiexec /i LLDOCXSetup.msi TENANTID=… CLIENTID=… GATEWAYURL=… GATEWAYSCOPE=…
-   ```
-   Alternatively, push the registry values through Group Policy.
+4. **Give the developer the tenant ID, the add-in client ID and the gateway values** to compile into `GateDefaults`.
+5. **Obtain a code-signing certificate** for lozaip.com, used to sign the release build and the MSI.
+6. **Distribute the signed MSI** by any means. Group Policy overrides are optional.
 
 ## Error handling
 
@@ -122,7 +130,13 @@ Only people with a lozaip.com Microsoft 365 account may use the LL-Docx tools. T
 
 **LLDOCX.Auth.Tests** (MSTest, net8.0), covering:
 - the `AccessPolicy` table, every row, including the boundaries (exactly 30 days, 30 days plus one second), clock rollback and the clamping of `offlineGraceDays`;
-- `GateConfigLoader`: a missing file, malformed JSON, invalid GUIDs, a registry override for each field, and the clamping;
+- `GateConfigLoader`:
+  - compiled defaults only;
+  - each allowed override;
+  - an attempted `TenantId` override being ignored;
+  - invalid values being ignored;
+  - `OfflineGraceDays` able only to lower the value;
+  - placeholder IDs reported as "not configured";
 - `AuthGate` with a fake `ITokenSource` and fake clock: state transitions, the `StateChanged` event, the 24-hour re-check, sign-out clearing state, and an exception leaving it locked;
 - `LastVerifiedStore` round trip and corruption handling.
 
@@ -133,10 +147,17 @@ Only people with a lozaip.com Microsoft 365 account may use the LL-Docx tools. T
 - offline within and beyond the grace period (set `OfflineGraceDays` to 1 through policy and roll back `gate.dat`);
 - sign-out;
 - a disabled test account locking at the next re-check;
-- the missing-configuration message.
+- the missing-configuration message;
+- installer, on a clean VM with standalone Office 2021 and on one with Microsoft 365 Apps, with both 32-bit and 64-bit Office:
+  - the add-in is visible to a second Windows user;
+  - the prerequisite failure messages appear;
+  - a major upgrade keeps the user signed in;
+  - uninstalling works.
 
 ## Out of scope
 
 - Identity providers other than Entra ID
 - Per-seat licensing or usage billing
 - Word for Mac and Word on the web
+- Automatic deployment (Intune, Microsoft 365 Centralized Deployment) and a built-in updater
+- A sign-in-protected download page
