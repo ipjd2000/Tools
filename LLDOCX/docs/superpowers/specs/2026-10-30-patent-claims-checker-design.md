@@ -43,17 +43,20 @@ ClaimsPaneControl (new CustomTaskPane) ← DeepCheckService merges AI findings
 ### Projects
 
 - **LLDOCX** (existing): adds `ClaimsExtractor`, `ClaimsPaneControl`, `DeepCheckService`, ribbon buttons, settings UI.
-- **LLDOCX.Claims** (new class library): all parsing and checking. Input is plain text with offsets; output is findings. Testable without Word.
-- **LLDOCX.Claims.Tests** (new, MSTest): fixture-driven tests of the engine.
+- **LLDOCX.Claims** (new netstandard2.0 class library): all parsing and checking. Input is plain text with offsets; output is findings. Testable without Word.
+- **LLDOCX.DeepCheck** (new netstandard2.0 class library): the Claude prompt, JSON schema, response parser, and Anthropic SDK call. Keeps the engine free of the SDK.
+- **LLDOCX.Claims.Tests** (new, MSTest on net8.0): fixture-driven tests of the engine and the Deep Check protocol, run with `dotnet test`.
+- The add-in moves from .NET Framework 4.6.1 to **4.7.2**. The Anthropic SDK ships netstandard2.0, and its dependencies need .NET Framework 4.6.2 or later.
 
 ### Core types (LLDOCX.Claims)
 
 ```csharp
-class RawClaim   { string Text; int DocStart; }           // DocStart = Word char offset of Text[0]
+class RawParagraph { string Text; int DocStart; }         // one document paragraph; DocStart = Word char offset of Text[0]
 class Claim      { int Number; string Status;             // e.g. "Canceled", "Currently Amended", or null
-                   string Preamble; string Body; string FullText;
-                   List<int> DependsOn; bool IsIndependent; bool IsMultipleDependent;
-                   ClaimCategory Category; int DocStart; }
+                   string Preamble; string FullText; string PreambleNoun;
+                   List<int> DependsOn; bool IsIndependent; bool IsMultipleDependent; bool HasCumulativeDependency;
+                   ClaimCategory Category; int DocStart;
+                   List<TextSegment> Segments; int ToDocOffset(int textIndex); }  // maps joined text back to the document
 enum ClaimCategory { Method, Apparatus, Composition, ComputerReadableMedium, Unknown }
 enum FindingType   { Antecedent, Dependency, Terminology, Formatting }
 enum Severity      { Error, Warning, Info }
@@ -62,7 +65,8 @@ class Finding      { int ClaimNumber; FindingType Type; Severity Severity; strin
                      string Text;     // flagged text, used for stale detection
                      string Source;   // "Rules" | "AI"
                      bool DisputedByAI; }
-class ClaimsAnalyzer { List<Finding> Analyze(IList<RawClaim> raw, ClaimsCheckOptions options); }
+class AnalysisResult { List<Claim> Claims; List<Finding> Findings; }
+class ClaimsAnalyzer { AnalysisResult Analyze(IList<RawParagraph> paragraphs, ClaimsCheckOptions options); }
 ```
 
 ## Claim extraction (Word layer)
@@ -118,7 +122,9 @@ class ClaimsAnalyzer { List<Finding> Analyze(IList<RawClaim> raw, ClaimsCheckOpt
 
 The phrase ends at a boundary token: a preposition (`of`, `to`, `for`, `in`, `on`, `with`, `from`, `by`, `at`, `between`, `into`, `through`), a verb or participle cue (words ending in `-ing` or `-ed` that follow the head, `is`, `are`, `being`, `configured`, `adapted`, `operable`), a claim keyword (`wherein`, `whereby`, `comprising`, `including`, `having`, `and`, `or`), or punctuation. Ordinals (`first`, `second`, …) are kept as part of the phrase.
 
-**Introducing determiners:** `a`, `an`, `one or more`, `at least one`, `a plurality of`, `plurality of`, `one`, `another`, `each`, `any`, and a bare plural with no determiner in an introducing position.
+**Introducing determiners:** `a`, `an`, `one or more`, `at least one`, `a plurality of`, `plurality of`, `another`. (`each`, `any`, `one`, and bare plurals are not treated as introducers, which keeps false positives down.)
+
+**Claim references** such as "The method of claim 1" or "the apparatus according to any of the preceding claims" are recognized and skipped by the antecedent check. They are handled by the dependency checks instead.
 
 **Referring determiners:** `the`, `said`, `each of the`, `each of said`, `the at least one`, `the one or more`, `the plurality of`.
 
@@ -139,13 +145,15 @@ The phrase ends at a boundary token: a preposition (`of`, `to`, `for`, `in`, `on
 | "a/an X" when X was already introduced in the chain | Warning |
 | "the X" with no match but a close match exists | Error, with a suggestion ("did you mean 'the fastening member'?") |
 
-**Allowlist** (no antecedent needed; editable in Settings): `the user`, `the art`, `the same`, `the following`, `the foregoing`, `the method of claim`, `the system of claim`, `the apparatus of claim`, `the device of claim`, `the group consisting of`, `the presence`, `the absence`, `the range`, `the order`. Phrases containing a unit of measure are also exempt.
+**Allowlist** (no antecedent needed; editable in Settings): `the user`, `the art`, `the same`, `the following`, `the foregoing`, `the group`, `the presence`, `the absence`, `the range`, `the order`. An entry matches a phrase equal to it or starting with it ("the same temperature"). Phrases whose head noun is a unit of measure are also exempt.
+
+**Singular/plural drift** is detected during this pass, because the match is already known at this point. It is reported with type Terminology and controlled by the terminology toggle.
 
 ### Terminology and typo checks (claims only)
 
 | Condition | Severity |
 |---|---|
-| Two terms within edit distance ≤ 2 (words ≥ 5 chars) or with the same stem, where one occurs ≥ 3× as often as the other | Warning, suggesting the more frequent term |
+| Two words (≥ 5 letters) within edit distance 1 (5–7 letters) or 2 (8+ letters), where one occurs ≥ 3× as often as the other; inflections such as "comprises"/"comprising" are excluded | Warning, suggesting the more frequent word |
 | Singular/plural drift ("the sensors" when only "a sensor" was introduced) | Warning |
 | Mixed use of "said" and "the" as referring determiners across the claim set | Info |
 | Repeated word ("the the") | Error |
@@ -176,7 +184,7 @@ The pane shows findings at or above the minimum severity set in Settings. The de
   - system prompt: a US patent-claim reviewer focused only on antecedent basis, dependency, and terminology
   - user content: the numbered claims, plus the offline findings with their indexes
 - Server-side refusal fallback is enabled (`fallbacks: "default"` with the `server-side-fallback-2026-07-01` beta). Before reading content, check `stop_reason` for `refusal`.
-- **Client:** the official `Anthropic` NuGet SDK. If the SDK does not support the add-in's target framework, the add-in moves from .NET 4.6.1 to the lowest framework the SDK supports (expected 4.7.2). Raw `HttpClient` is used only if the SDK supports no .NET Framework version. In that case TLS 1.2 is enabled explicitly. This is settled in the implementation plan's first task.
+- **Client:** the official `Anthropic` NuGet SDK (13.3.0, netstandard2.0), in the `LLDOCX.DeepCheck` project. The add-in targets .NET Framework 4.7.2 and uses generated binding redirects (`LLDOCX.dll.config`).
 - AI findings are mapped back to document offsets. The AI returns the claim number and the quoted text; the offset is found by searching within that claim's text. Findings that can't be located are shown without navigation.
 - Network or API work runs off the UI thread, with a cancellable progress indicator.
 
@@ -188,7 +196,7 @@ The pane shows findings at or above the minimum severity set in Settings. The de
   - `ClaimsAllowlist` (List<string>, defaults above)
   - `DeepCheckModel` (default `claude-opus-5-5`)
 - The API key is stored separately, encrypted with DPAPI (`ProtectedData`, CurrentUser scope), in `%APPDATA%\LL-Docx\claude.key`. It is never written to the BinaryFormatter file.
-- A new "Claims Check" group in `SettingUserControl` holds the toggles, the severity dropdown, an allowlist editor, the model ID, and API key Set/Clear buttons.
+- The Claims Check pane has a **Settings tab** with the toggles, the severity dropdown, an allowlist editor, the model ID, and API key Set/Clear buttons. They live there rather than in the existing Settings pane, whose fixed designer layout has no room. When the existing Settings pane saves, it keeps the claims fields that are on disk, so it doesn't overwrite them.
 
 ## Error handling
 
@@ -206,7 +214,7 @@ The pane shows findings at or above the minimum severity set in Settings. The de
 
 ## Testing
 
-- **LLDOCX.Claims.Tests** (MSTest). Each fixture is a `.txt` claim set with an expected-findings `.json` file (claim number, type, severity, and a substring of the message). Fixtures cover:
+- **LLDOCX.Claims.Tests** (MSTest, net8.0). The tests are inline claim sets with assertions on claim number, severity, and a substring of the message. They cover:
   - a clean claim set (zero findings)
   - missing antecedent, ambiguous first/second, re-introduction, weak head-noun match
   - multiple dependent chains, including the forbidden multiple-on-multiple case
