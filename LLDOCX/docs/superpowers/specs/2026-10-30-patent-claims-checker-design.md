@@ -3,6 +3,8 @@
 **Date:** 2026-10-30
 **Status:** Approved design, pending implementation plan
 **Component:** LLDOCX Word add-in (VSTO, C#)
+**Depends on:** the LL-Docx Sign-In Gate (`2026-10-31-lldocx-sign-in-gate-design.md`), which must be built first
+**Revised 2026-10-31:** Deep Check now goes through an Azure gateway; no API key exists on users' machines
 
 ## Purpose
 
@@ -23,6 +25,8 @@ Findings appear in a task pane. The document is never changed by the tool.
 | Terminology scope | Claims only (no comparison against the specification) |
 | Code structure | Pure-C# engine library + thin Word layer + unit-test project |
 | Relationship to Scan | Separate ribbon buttons; existing Scan is unchanged |
+| Access | Both buttons are gated by the Sign-In Gate (lozaip.com accounts only) |
+| Deep Check backend | An Azure Function gateway owned by lozaip.com. It validates the user's Entra token and calls Claude. The model, prompt and credentials live only on the gateway |
 
 ## Architecture
 
@@ -38,15 +42,20 @@ LLDOCX.Claims (new class library, no Office references)
 List<Finding>
    │
 ClaimsPaneControl (new CustomTaskPane) ← DeepCheckService merges AI findings
+                                              │  HTTPS + user's Entra token (from the Sign-In Gate)
+                                              ▼
+                                   LLDOCX.Gateway (Azure Function) ──► Claude (Microsoft Foundry,
+                                                                        or the Anthropic API)
 ```
 
 ### Projects
 
-- **LLDOCX** (existing): adds `ClaimsExtractor`, `ClaimsPaneControl`, `DeepCheckService`, ribbon buttons, settings UI.
+- **LLDOCX** (existing): adds `ClaimsExtractor`, `ClaimsPaneControl`, `DeepCheckService`, ribbon buttons and settings UI.
 - **LLDOCX.Claims** (new netstandard2.0 class library): all parsing and checking. Input is plain text with offsets; output is findings. Testable without Word.
-- **LLDOCX.DeepCheck** (new netstandard2.0 class library): the Claude prompt, JSON schema, response parser, and Anthropic SDK call. Keeps the engine free of the SDK.
-- **LLDOCX.Claims.Tests** (new, MSTest on net8.0): fixture-driven tests of the engine and the Deep Check protocol, run with `dotnet test`.
-- The add-in moves from .NET Framework 4.6.1 to **4.7.2**. The Anthropic SDK ships netstandard2.0, and its dependencies need .NET Framework 4.6.2 or later.
+- **LLDOCX.DeepCheck** (new netstandard2.0 class library): the wire contract shared by the add-in and the gateway. It holds the request and response DTOs, the response parser and validator, and the mapping of AI findings back to document offsets. It has no Anthropic SDK reference.
+- **LLDOCX.Gateway** (new Azure Functions app, .NET 8 isolated worker): validates tokens, enforces limits, builds the prompt, calls Claude and returns findings. It is the only component that references the Anthropic SDK.
+- **LLDOCX.Claims.Tests** (new, MSTest on net8.0): tests of the engine, the Deep Check contract and the gateway's request handling, run with `dotnet test`.
+- The add-in moves from .NET Framework 4.6.1 to **4.7.2**, as required by MSAL's broker package (Sign-In Gate) and the netstandard2.0 libraries.
 
 ### Core types (LLDOCX.Claims)
 
@@ -177,16 +186,52 @@ The pane shows findings at or above the minimum severity set in Settings. The de
 
 - Triggered by the "Deep Check" button. If no offline check has run yet, the offline check runs first.
 - Before sending anything, a confirmation dialog appears every time. It shows the number of claims and an approximate character count, and offers "Don't ask again for this document" (remembered for the session, per document full name).
-- **Request:**
-  - model: from Settings, default `claude-opus-5-5`
-  - `output_config.effort`: `high`
-  - `output_config.format`: a JSON schema for `{ findings: Finding[], disputes: { index: int, reason: string }[] }`
-  - system prompt: a US patent-claim reviewer focused only on antecedent basis, dependency, and terminology
-  - user content: the numbered claims, plus the offline findings with their indexes
-- Server-side refusal fallback is enabled (`fallbacks: "default"` with the `server-side-fallback-2026-07-01` beta). Before reading content, check `stop_reason` for `refusal`.
-- **Client:** the official `Anthropic` NuGet SDK (13.3.0, netstandard2.0), in the `LLDOCX.DeepCheck` project. The add-in targets .NET Framework 4.7.2 and uses generated binding redirects (`LLDOCX.dll.config`).
-- AI findings are mapped back to document offsets. The AI returns the claim number and the quoted text; the offset is found by searching within that claim's text. Findings that can't be located are shown without navigation.
-- Network or API work runs off the UI thread, with a cancellable progress indicator.
+- The button is disabled when the gate is locked or offline, or when no gateway is configured.
+
+### Add-in → gateway
+
+- `POST {gatewayUrl}` with `Authorization: Bearer <token>`. The token comes from `ITokenSource.GetGatewayTokenAsync()` (Sign-In Gate), audience is the gateway API and the scope is `DeepCheck.Use`.
+- **Request body (`DeepCheckRequest`):** `{ claims: [{ number, text }], offlineFindings: [{ index, claimNumber, type, message, text }] }`.
+- **Response body (`DeepCheckResponse`):** `{ findings: [{ claimNumber, type, severity, message, suggestion, quotedText }], disputes: [{ index, reason }] }`.
+- **Error responses** are `{ error: { code, message } }` with HTTP 400 (too large or invalid), 401/403 (token or role), 429 (per-user limit, with `Retry-After`), 422 (`refused`: the model declined) and 502/503 (upstream failure).
+- The add-in sends no model name, prompt or credentials. It cannot choose or change them.
+- AI findings are mapped back to document offsets. The AI returns the claim number and the quoted text, and the offset is found by searching within that claim's text. Findings that can't be located are shown without navigation.
+- Network work runs off the UI thread, with a cancellable progress indicator. The HTTP timeout is 5 minutes.
+
+### Gateway (LLDOCX.Gateway)
+
+- **Authentication:** validates the JWT signature against the tenant's Entra signing keys. It checks:
+  - the issuer is `https://login.microsoftonline.com/{tenantId}/v2.0`;
+  - the audience is the gateway's app ID URI or client ID;
+  - `tid` equals the configured tenant;
+  - `scp` contains `DeepCheck.Use`;
+  - if `RequiredRole` is set, `roles` contains it.
+
+  Any failure returns 401 or 403.
+- **Limits:**
+  - total claims text at most `MaxInputChars` (default 200,000), otherwise 400;
+  - at most `RequestsPerUserPerHour` per user `oid` (default 30), otherwise 429. The counter is held in memory per instance, which is acceptable at lozaip.com's scale.
+- **Claude request:**
+  - model: `Model` app setting, default `claude-opus-5-5` (on Foundry, the deployment name);
+  - `output_config.effort`: `Effort` app setting, default `high`;
+  - `output_config.format`: a JSON schema matching `DeepCheckResponse`;
+  - system prompt: a US patent-claim reviewer focused only on antecedent basis, dependency and terminology;
+  - user content: the numbered claims plus the offline findings with their indexes.
+- **Provider** (`ClaudeProvider` app setting):
+  - `Foundry` (preferred): `AnthropicFoundryClient` from the `Anthropic.Foundry` NuGet package, calling a Claude deployment in lozaip.com's Microsoft Foundry resource. It authenticates with the Function App's managed identity, so no key exists. If the SDK's Foundry client can't use a managed identity, the fallback is a Foundry key stored in Key Vault.
+  - `Anthropic`: `AnthropicClient` with the API key read from Azure Key Vault through a Key Vault reference in app settings. It enables server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`), which Foundry does not support.
+- **Refusals:** the gateway checks `stop_reason` for `refusal` before reading content. A refusal returns 422 `refused`.
+- **Logging:** Application Insights records the user's `oid`/UPN, the timestamp, claim count, input size, latency and outcome. It **never** records claim text or the model's output, since unfiled claims are confidential.
+- **App settings** (Azure configuration, admin-controlled):
+  - `TenantId`, `Audience`, `RequiredRole`
+  - `ClaudeProvider`, `FoundryEndpoint`, `Model`, `Effort`
+  - `AnthropicApiKey`: a Key Vault reference, used only by the `Anthropic` provider
+  - `MaxInputChars`, `RequestsPerUserPerHour`
+- **Hosting:** an Azure Functions Flex Consumption or Premium plan, HTTPS only, with the managed identity enabled. The function timeout is at least 5 minutes, because Deep Check calls can be long.
+- **Still to verify** (the plan begins with a spike):
+  - that `claude-opus-5-5` is deployable in Foundry in lozaip.com's region;
+  - which authentication options `AnthropicFoundryClient` supports;
+  - the exact SDK type names, using a compile-fix loop.
 
 ## Settings
 
@@ -194,9 +239,8 @@ The pane shows findings at or above the minimum severity set in Settings. The de
   - `ClaimsCheckAntecedent`, `ClaimsCheckDependency`, `ClaimsCheckTerminology` (bool, default true)
   - `ClaimsMinSeverity` (default Info)
   - `ClaimsAllowlist` (List<string>, defaults above)
-  - `DeepCheckModel` (default `claude-opus-5-5`)
-- The API key is stored separately, encrypted with DPAPI (`ProtectedData`, CurrentUser scope), in `%APPDATA%\LL-Docx\claude.key`. It is never written to the BinaryFormatter file.
-- The Claims Check pane has a **Settings tab** with the toggles, the severity dropdown, an allowlist editor, the model ID, and API key Set/Clear buttons. They live there rather than in the existing Settings pane, whose fixed designer layout has no room. When the existing Settings pane saves, it keeps the claims fields that are on disk, so it doesn't overwrite them.
+- There is no model setting and no API key on the client. Both are gateway app settings controlled by the administrator.
+- The Claims Check pane has a **Settings tab** with the toggles, the severity dropdown and an allowlist editor. They live there rather than in the existing Settings pane, whose fixed designer layout has no room. When the existing Settings pane saves, it keeps the claims fields that are on disk, so it doesn't overwrite them.
 
 ## Error handling
 
@@ -205,11 +249,15 @@ The pane shows findings at or above the minimum severity set in Settings. The de
 | No claims section found | Message offering to check the selected text |
 | Malformed or missing numbering | Parse what can be parsed; numbering problems become findings |
 | Engine throws an exception | Log it, show "Claims check failed: <message>", and leave the pane unchanged |
-| Deep Check: no API key | Message pointing to Settings |
-| Deep Check: 401/403 | "API key rejected" |
-| Deep Check: 429/5xx/timeout | SDK retries, then a message; offline findings are kept |
-| Deep Check: refusal not covered by the fallback | Message; offline findings are kept |
-| Deep Check: response doesn't match the schema | Message; offline findings are kept |
+| Deep Check: gate locked, offline or no gateway configured | Button disabled; tooltip explains why |
+| Deep Check: token can't be acquired silently | Prompt to sign in again |
+| Deep Check: 401/403 from gateway | "Your account isn't authorized for Deep Check. Contact your administrator." |
+| Deep Check: 400 too large | "The claims are too long for Deep Check (limit N characters)." |
+| Deep Check: 429 | "Deep Check limit reached; try again in N minutes." |
+| Deep Check: 422 refused | "Claude declined to review these claims." Offline findings are kept |
+| Deep Check: 502/503/timeout/no network | Message; offline findings are kept |
+| Deep Check: response doesn't match the contract | Message; offline findings are kept |
+| Gateway: Claude 429/5xx | The SDK retries, then the gateway returns 503 |
 | Document edited after a check | Affected findings marked stale when clicked |
 
 ## Testing
@@ -224,13 +272,20 @@ The pane shows findings at or above the minimum severity set in Settings. The de
   - status markers and canceled claims
 - **False-positive guard:** at least three real claim sets from issued patents must produce zero Errors.
 - Unit tests for the parser (numbering, joining paragraphs, dependency patterns, categories) and for noun-phrase extraction.
+- **Gateway tests,** with the Claude client and token validation behind interfaces. They cover:
+  - token rules (wrong tenant, missing scope, missing role);
+  - the size limit;
+  - the per-user rate limit;
+  - mapping a refusal to 422 and an upstream failure to 503;
+  - schema-valid output passed through;
+  - a check that claim text never reaches the logger.
+- **Deployed smoke test:** one Deep Check from Word against the real gateway.
 - **Manual checklist** for the Word layer and Deep Check:
   - typed vs. auto-numbered claims
   - selection mode
   - navigation and stale detection
-  - API key set/clear
   - confirmation dialog
-  - error messages with no network and with a bad key
+  - error messages with no network, an unauthorized account and the rate limit
 
 ## Out of scope
 
