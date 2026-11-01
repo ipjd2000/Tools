@@ -75,6 +75,50 @@ public class ClaimParserTests
     }
 
     [TestMethod]
+    public void Finds_dependency_reference_outside_the_preamble()
+    {
+        var claims = T.Claims("1. A method comprising heating.",
+            "2. A system comprising a processor configured to perform the method of claim 1.");
+        var c = claims[1];
+        CollectionAssert.AreEqual(new[] { 1 }, c.DependsOn);
+        Assert.IsFalse(c.IsIndependent);
+        Assert.AreEqual(c.FullText.IndexOf("claim 1"), c.DependencyRefStart);
+        Assert.AreEqual("claim 1".Length, c.DependencyRefLength);
+        Assert.AreEqual("A system", c.Preamble.Trim().Substring(0, 8));
+        Assert.AreEqual("system", c.PreambleNoun);
+        Assert.IsTrue(claims[0].IsIndependent);
+    }
+
+    [DataTestMethod]
+    [DataRow("5. The method of any preceding claim, wherein x.")]
+    [DataRow("5. The method of any previous claim, wherein x.")]
+    [DataRow("5. The method of any one of the preceding claims, wherein x.")]
+    public void Recognizes_singular_and_one_of_preceding_forms(string line)
+    {
+        var c = T.Claims(line)[0];
+        Assert.AreEqual("1,2,3,4", string.Join(",", c.DependsOn));
+        Assert.IsTrue(c.IsMultipleDependent);
+    }
+
+    [DataTestMethod]
+    [DataRow("1. A built-in sensor comprising a lens.", "sensor")]
+    [DataRow("1. A system-on-chip comprising a core.", "system-on-chip")]
+    [DataRow("1. A sensor for a lens.", "sensor")]
+    public void Hyphenated_words_are_not_split_by_stop_words(string line, string noun)
+    {
+        Assert.AreEqual(noun, T.Claims(line)[0].PreambleNoun);
+    }
+
+    [TestMethod]
+    public void Huge_claim_numbers_do_not_throw_or_loop()
+    {
+        var c = T.Claims("2. The method of claims 1-99999999999.")[0];
+        Assert.IsTrue(c.DependsOn.Count <= 1);
+        var d = T.Claims("3. The method of claims 1-9999.")[0];
+        Assert.AreEqual(0, d.DependsOn.Count);
+    }
+
+    [TestMethod]
     public void Ignores_text_before_first_claim_and_blank_paragraphs()
     {
         var claims = T.Claims("CLAIMS", "", "1. A cup comprising a handle.", "", "2. The cup of claim 1, wherein the handle is round.");

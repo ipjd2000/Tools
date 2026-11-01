@@ -12,12 +12,13 @@ namespace LLDOCX.Claims
         static readonly Regex ClaimStart = new Regex(@"^\s*(\d{1,3})\s*[.)](?!\d)\s*", RegexOptions.Compiled);
         static readonly Regex StatusRx = new Regex(@"^\((canceled|cancelled|withdrawn|original|previously presented|currently amended|new)\)\s*", Opts);
         static readonly Regex Transition = new Regex(@"\b(?:comprising|consisting essentially of|consisting of|including|wherein|characterized in that|having)\b|:", Opts);
-        static readonly Regex Preceding = new Regex(@"\b(?:any|one)\s+(?:one\s+)?of\s+the\s+(?:preceding|previous|foregoing)\s+claims\b", Opts);
-        static readonly Regex DepRef = new Regex(@"\bclaims?\s+(\d+(?:\s*(?:-|–|to|through|,|or|and|, or|, and)\s*\d+)*)", Opts);
-        static readonly Regex NumberOrRange = new Regex(@"(\d+)(?:\s*(?:-|–|to|through)\s*(\d+))?", RegexOptions.Compiled);
+        static readonly Regex Preceding = new Regex(@"\b(?:any|one)\s+(?:one\s+)?of\s+the\s+(?:preceding|previous|foregoing)\s+claims\b|\bany\s+(?:preceding|previous|foregoing)\s+claims?\b", Opts);
+        static readonly Regex DepRef = new Regex(@"\bclaims?\s+(\d{1,4}(?!\d)(?:\s*(?:-|–|to|through|,|or|and|, or|, and)\s*\d{1,4}(?!\d))*)", Opts);
+        static readonly Regex NumberOrRange = new Regex(@"(\d{1,4})(?:\s*(?:-|–|to|through)\s*(\d{1,4}))?", RegexOptions.Compiled);
+        const int MaxRangeSpan = 10000;
         static readonly Regex AndRx = new Regex(@"\band\b", Opts);
         static readonly Regex LeadingDeterminer = new Regex(@"^\s*(?:a|an|the|one)\s+", Opts);
-        static readonly Regex NounStop = new Regex(@"\b(?:for|of|according|as|in|comprising|consisting|including|having|wherein|that|which|configured|to|storing|with|on)\b|[,:;]", Opts);
+        static readonly Regex NounStop = new Regex(@"(?<![-\w])(?:for|of|according|as|in|comprising|consisting|including|having|wherein|that|which|configured|to|storing|with|on)(?![-\w])|[,:;]", Opts);
 
         static readonly (Regex Pattern, ClaimCategory Category)[] CategoryKeywords =
         {
@@ -99,7 +100,7 @@ namespace LLDOCX.Claims
 
         static void ParseDependencies(Claim claim)
         {
-            string region = claim.Preamble;
+            string region = claim.FullText;
             var pm = Preceding.Match(region);
             if (pm.Success)
             {
@@ -127,6 +128,8 @@ namespace LLDOCX.Claims
                     {
                         hasRange = true;
                         int b = int.Parse(r.Groups[2].Value);
+                        int rangeSpan = Math.Abs(b - a);
+                        if (rangeSpan > claim.Number || rangeSpan > MaxRangeSpan) continue;
                         for (int i = Math.Min(a, b); i <= Math.Max(a, b); i++) AddDependency(claim, i);
                     }
                     else AddDependency(claim, a);
