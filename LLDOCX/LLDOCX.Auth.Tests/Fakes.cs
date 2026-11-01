@@ -48,3 +48,17 @@ internal sealed class FakeTokenSource : ITokenSource
         return Task.CompletedTask;
     }
 }
+
+internal sealed class ControlledTokenSource : ITokenSource
+{
+    public TaskCompletionSource<RenewalOutcome> SilentGate { get; } = new TaskCompletionSource<RenewalOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Func<Task<RenewalOutcome>> Silent { get; set; }
+
+    public Task<RenewalOutcome> RenewSilentAsync(CancellationToken ct) => Silent != null ? Silent() : SilentGate.Task;
+
+    public Task<RenewalOutcome> SignInInteractiveAsync(IntPtr parentWindow, CancellationToken ct) => throw new NotSupportedException();
+
+    public Task<string> GetGatewayTokenAsync(CancellationToken ct) => Task.FromResult("token");
+
+    public Task SignOutAsync() => Task.CompletedTask;
+}

@@ -130,6 +130,40 @@ public class AuthGateTests
     }
 
     [TestMethod]
+    public async Task Sign_out_waits_for_an_in_flight_check_and_wins()
+    {
+        var controlled = new ControlledTokenSource();
+        var gate = new AuthGate(Config, controlled, _store, _clock);
+        var check = gate.CheckAsync();
+        var signOut = gate.SignOutAsync();
+        controlled.SilentGate.SetResult(Ok());
+        await Task.WhenAll(check, signOut);
+        Assert.AreEqual(GateStatus.Locked, gate.State.Status);
+        Assert.AreEqual(LockReason.SignInRequired, gate.State.Reason);
+        Assert.IsNull(_store.Record);
+    }
+
+    [TestMethod]
+    public async Task Cancelled_check_keeps_the_previous_state()
+    {
+        var controlled = new ControlledTokenSource();
+        var gate = new AuthGate(Config, controlled, _store, _clock);
+        controlled.Silent = () => Task.FromResult(Ok());
+        await gate.CheckAsync();
+        using (var cts = new CancellationTokenSource())
+        {
+            controlled.Silent = () =>
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            };
+            var s = await gate.CheckAsync(cts.Token);
+            Assert.AreEqual(GateStatus.Unlocked, s.Status);
+            Assert.AreEqual(GateStatus.Unlocked, gate.State.Status);
+        }
+    }
+
+    [TestMethod]
     public async Task EnsureFresh_does_not_recheck_within_24_hours()
     {
         var gate = NewGate();

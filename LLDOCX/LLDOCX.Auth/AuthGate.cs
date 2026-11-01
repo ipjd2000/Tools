@@ -75,6 +75,10 @@ namespace LLDOCX.Auth
                 {
                     outcome = await _tokens.RenewSilentAsync(ct).ConfigureAwait(false);
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return _state;
+                }
                 catch (Exception ex)
                 {
                     _log?.Invoke("Silent token renewal failed: " + ex);
@@ -118,14 +122,23 @@ namespace LLDOCX.Auth
 
         public async Task SignOutAsync()
         {
-            if (_tokens != null)
+            await _lock.WaitAsync().ConfigureAwait(false);
+            try
             {
-                try { await _tokens.SignOutAsync().ConfigureAwait(false); }
-                catch (Exception ex) { _log?.Invoke("Sign-out failed: " + ex); }
+                if (_tokens != null)
+                {
+                    try { await _tokens.SignOutAsync().ConfigureAwait(false); }
+                    catch (Exception ex) { _log?.Invoke("Sign-out failed: " + ex); }
+                }
+                SafeClear();
+                _lastOnlineCheckUtc = null;
+                _lastAttemptUtc = null;
+                SetState(GateState.Locked(_config.IsConfigured ? LockReason.SignInRequired : LockReason.NotConfigured));
             }
-            SafeClear();
-            _lastOnlineCheckUtc = null;
-            SetState(GateState.Locked(_config.IsConfigured ? LockReason.SignInRequired : LockReason.NotConfigured));
+            finally
+            {
+                _lock.Release();
+            }
         }
 
         /// <summary>Call before every gated action: re-checks silently when the last online check is stale.</summary>
