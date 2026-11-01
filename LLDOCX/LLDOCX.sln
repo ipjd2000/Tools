@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LLDOCX.Claims", "LLDOCX.Cla
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LLDOCX.Claims.Tests", "LLDOCX.Claims.Tests\LLDOCX.Claims.Tests.csproj", "{0FC09CAD-3677-4540-A6B2-8C2CB153C4B8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LLDOCX.DeepCheck", "LLDOCX.DeepCheck\LLDOCX.DeepCheck.csproj", "{4768FFFA-D73C-45FA-88F0-AF3E8854626F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -93,6 +95,18 @@ Global
 		{0FC09CAD-3677-4540-A6B2-8C2CB153C4B8}.Release|x86.Build.0 = Release|Any CPU
 		{0FC09CAD-3677-4540-A6B2-8C2CB153C4B8}.Release|x64.ActiveCfg = Release|Any CPU
 		{0FC09CAD-3677-4540-A6B2-8C2CB153C4B8}.Release|x64.Build.0 = Release|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Debug|x86.Build.0 = Debug|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Debug|x64.Build.0 = Debug|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Release|x86.ActiveCfg = Release|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Release|x86.Build.0 = Release|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Release|x64.ActiveCfg = Release|Any CPU
+		{4768FFFA-D73C-45FA-88F0-AF3E8854626F}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
