@@ -133,4 +133,34 @@ public class ClaimParserTests
         Assert.AreEqual(1, claims.Count);
         Assert.AreEqual("A rod comprising a diameter of 2.5 mm.", claims[0].FullText);
     }
+
+    [TestMethod]
+    public void Drops_referenced_ancestors_from_dependencies()
+    {
+        var claims = T.Claims(
+            "1. A composition comprising a salt.",
+            "2. The composition of claim 1, comprising a binder.",
+            "3. The method of claim 2, wherein the composition of claim 1 is administered orally.");
+        CollectionAssert.AreEqual(new[] { 2 }, claims[2].DependsOn);
+        Assert.IsFalse(claims[2].IsMultipleDependent);
+        Assert.IsFalse(claims[2].HasCumulativeDependency);
+        var f = AntecedentChecker.Check(claims, new string[0]);
+        Assert.IsFalse(f.Any(x => x.ClaimNumber == 3 && x.Severity == Severity.Error), T.Dump(f));
+    }
+
+    [TestMethod]
+    public void Unrelated_and_between_distant_references_is_not_cumulative()
+    {
+        var c = T.Claims("5. The method of claim 1, wherein the heater and the cooler operate, and the device of claim 2 is used.")[0];
+        Assert.IsTrue(c.IsMultipleDependent);
+        Assert.IsFalse(c.HasCumulativeDependency);
+    }
+
+    [TestMethod]
+    public void Claim_without_dependencies_is_not_multiple_dependent()
+    {
+        var c = T.Claims("1. The method of any preceding claim, wherein x.")[0];
+        Assert.AreEqual(0, c.DependsOn.Count);
+        Assert.IsFalse(c.IsMultipleDependent);
+    }
 }

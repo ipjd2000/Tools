@@ -22,6 +22,8 @@ namespace LLDOCX.DeepCheck
                 throw new DeepCheckException(Unreadable, ex);
             }
 
+            try
+            {
             using (doc)
             {
                 var root = doc.RootElement;
@@ -30,19 +32,33 @@ namespace LLDOCX.DeepCheck
                 var added = new List<Finding>();
                 if (root.TryGetProperty("findings", out var findings) && findings.ValueKind == JsonValueKind.Array)
                     foreach (var f in findings.EnumerateArray())
+                    {
+                        if (f.ValueKind != JsonValueKind.Object) continue;
                         added.Add(ToFinding(f, claims));
+                    }
 
                 if (root.TryGetProperty("disputes", out var disputes) && disputes.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var d in disputes.EnumerateArray())
                     {
-                        int index = d.TryGetProperty("index", out var i) && i.ValueKind == JsonValueKind.Number ? i.GetInt32() : -1;
+                        if (d.ValueKind != JsonValueKind.Object) continue;
+                        int index = -1;
+                        if (d.TryGetProperty("index", out var i) && i.ValueKind == JsonValueKind.Number && !i.TryGetInt32(out index)) throw new DeepCheckException(Unreadable);
                         if (index < 0 || index >= ruleFindings.Count) continue;
                         ruleFindings[index].DisputedByAI = true;
                         ruleFindings[index].DisputeReason = Str(d, "reason");
                     }
                 }
                 return added;
+            }
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new DeepCheckException(Unreadable, ex);
+            }
+            catch (FormatException ex)
+            {
+                throw new DeepCheckException(Unreadable, ex);
             }
         }
 
@@ -59,12 +75,12 @@ namespace LLDOCX.DeepCheck
                     if (!root.TryGetProperty("disputes", out var disputes) || disputes.ValueKind != JsonValueKind.Array) return false;
                     foreach (var f in findings.EnumerateArray())
                     {
-                        if (f.ValueKind != JsonValueKind.Object || !Is(f, "claim", JsonValueKind.Number)) return false;
+                        if (f.ValueKind != JsonValueKind.Object || !IsInt(f, "claim")) return false;
                         foreach (var name in new[] { "type", "severity", "quote", "message", "suggestion" })
                             if (!Is(f, name, JsonValueKind.String)) return false;
                     }
                     foreach (var d in disputes.EnumerateArray())
-                        if (d.ValueKind != JsonValueKind.Object || !Is(d, "index", JsonValueKind.Number) || !Is(d, "reason", JsonValueKind.String))
+                        if (d.ValueKind != JsonValueKind.Object || !IsInt(d, "index") || !Is(d, "reason", JsonValueKind.String))
                             return false;
                     return true;
                 }
@@ -77,9 +93,15 @@ namespace LLDOCX.DeepCheck
 
         static bool Is(JsonElement e, string name, JsonValueKind kind) => e.TryGetProperty(name, out var v) && v.ValueKind == kind;
 
+        static bool IsInt(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out _);
+
         static Finding ToFinding(JsonElement f, IList<Claim> claims)
         {
-            int number = f.TryGetProperty("claim", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : 0;
+            int number = 0;
+            if (f.TryGetProperty("claim", out var n) && n.ValueKind == JsonValueKind.Number)
+            {
+                if (!n.TryGetInt32(out number)) throw new DeepCheckException(Unreadable);
+            }
             var type = ParseEnum(Str(f, "type"), FindingType.Antecedent);
             var severity = ParseEnum(Str(f, "severity"), Severity.Warning);
             string quote = Str(f, "quote");

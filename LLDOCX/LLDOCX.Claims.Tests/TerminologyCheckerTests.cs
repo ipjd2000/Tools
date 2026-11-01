@@ -22,11 +22,23 @@ public class TerminologyCheckerTests
     public void Ignores_inflections()
     {
         var f = TerminologyChecker.Check(T.Claims(
-            "1. A method comprising: connecting a wire.",
-            "2. The method of claim 1, comprising connecting a cable.",
-            "3. The method of claim 1, comprising connecting a pipe.",
-            "4. The method of claim 1, wherein the wire comprises copper."));
-        Assert.IsFalse(f.Any(x => x.Type == FindingType.Terminology), T.Dump(f));
+            "1. A device comprising a connector.",
+            "2. The device of claim 1, wherein the connector is steel.",
+            "3. The device of claim 1, wherein the connector is welded.",
+            "4. The device of claim 1, further comprising connectors."));
+        Assert.IsFalse(f.Any(x => x.Type == FindingType.Terminology && x.Message.Contains("typo or variant")), T.Dump(f));
+    }
+
+    [TestMethod]
+    public void Notes_mixed_said_and_the_flagging_the_when_said_is_majority()
+    {
+        var f = TerminologyChecker.Check(T.Claims(
+            "1. A cup comprising a handle and a rim.",
+            "2. The cup of claim 1, wherein said handle is round.",
+            "3. The cup of claim 1, wherein said rim is round.",
+            "4. The cup of claim 1, wherein the handle is square."));
+        var note = f.Single(x => x.Message.Contains("both 'said'"));
+        Assert.AreEqual(4, note.ClaimNumber, T.Dump(f));
     }
 
     [TestMethod]

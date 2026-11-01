@@ -35,11 +35,11 @@ namespace LLDOCX.Claims
         public static string Singularize(string word)
         {
             if (string.IsNullOrEmpty(word) || word.Length <= 3) return word;
-            if (word.EndsWith("ies") && word.Length > 4) return word.Substring(0, word.Length - 3) + "y";
-            if (word.EndsWith("sses")) return word.Substring(0, word.Length - 2);
-            if (word.EndsWith("xes") || word.EndsWith("ches") || word.EndsWith("shes")) return word.Substring(0, word.Length - 2);
-            if (word.EndsWith("ss") || word.EndsWith("us") || word.EndsWith("is")) return word;
-            if (word.EndsWith("s")) return word.Substring(0, word.Length - 1);
+            if (word.EndsWith("ies", StringComparison.Ordinal) && word.Length > 4) return word.Substring(0, word.Length - 3) + "y";
+            if (word.EndsWith("sses", StringComparison.Ordinal)) return word.Substring(0, word.Length - 2);
+            if (word.EndsWith("xes", StringComparison.Ordinal) || word.EndsWith("ches", StringComparison.Ordinal) || word.EndsWith("shes", StringComparison.Ordinal)) return word.Substring(0, word.Length - 2);
+            if (word.EndsWith("ss", StringComparison.Ordinal) || word.EndsWith("us", StringComparison.Ordinal) || word.EndsWith("is", StringComparison.Ordinal)) return word;
+            if (word.EndsWith("s", StringComparison.Ordinal)) return word.Substring(0, word.Length - 1);
             return word;
         }
 

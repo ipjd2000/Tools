@@ -49,6 +49,8 @@ namespace LLDOCX.Claims
         public bool IsIndependent => DependsOn.Count == 0;
         public bool IsMultipleDependent { get; set; }
         public bool HasCumulativeDependency { get; set; }
+        internal bool UsesPrecedingForm { get; set; }
+        internal HashSet<int> SingleRefNumbers { get; } = new HashSet<int>();
         public int DependencyRefStart { get; set; } = -1;
         public int DependencyRefLength { get; set; }
         public ClaimCategory Category { get; set; }

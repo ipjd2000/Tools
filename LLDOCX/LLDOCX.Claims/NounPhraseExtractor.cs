@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -123,7 +124,7 @@ namespace LLDOCX.Claims
                     if (Boundary.Contains(w)) break;
                     bool afterModifier = phrase.Words.Count > 0 && ModifierWords.Contains(phrase.Words[phrase.Words.Count - 1]);
                     if (nonOrdinal > 0 && !NounExceptions.Contains(w) && !ModifierWords.Contains(w) &&
-                        (w.EndsWith("ing") || w.EndsWith("ed") || w.EndsWith("ly") || (TextUtil.IsPlural(w) && !afterModifier)))
+                        (w.EndsWith("ing", StringComparison.Ordinal) || w.EndsWith("ed", StringComparison.Ordinal) || w.EndsWith("ly", StringComparison.Ordinal) || (TextUtil.IsPlural(w) && !afterModifier)))
                         break;
                     if (phrase.Words.Count == 0) phrase.WordsStart = tok.Index;
                     phrase.Words.Add(w);
@@ -152,7 +153,7 @@ namespace LLDOCX.Claims
         }
 
         static bool IsParticiple(string w) =>
-            (w.EndsWith("ed") || w.EndsWith("ing")) && !NounExceptions.Contains(w);
+            (w.EndsWith("ed", StringComparison.Ordinal) || w.EndsWith("ing", StringComparison.Ordinal)) && !NounExceptions.Contains(w);
 
         static bool Matches(List<Token> tokens, int i, string[] words)
         {

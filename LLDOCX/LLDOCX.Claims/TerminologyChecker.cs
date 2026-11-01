@@ -63,12 +63,12 @@ namespace LLDOCX.Claims
             }
         }
 
-        static bool IsInflection(string a, string b) => a.StartsWith(b) || b.StartsWith(a) || Stem(a) == Stem(b);
+        static bool IsInflection(string a, string b) => a.StartsWith(b, StringComparison.Ordinal) || b.StartsWith(a, StringComparison.Ordinal) || Stem(a) == Stem(b);
 
         static string Stem(string word)
         {
             foreach (var s in InflectionSuffixes)
-                if (word.EndsWith(s) && word.Length - s.Length >= 3) return word.Substring(0, word.Length - s.Length);
+                if (word.EndsWith(s, StringComparison.Ordinal) && word.Length - s.Length >= 3) return word.Substring(0, word.Length - s.Length);
             return word;
         }
 
@@ -98,10 +98,10 @@ namespace LLDOCX.Claims
                     $"Repeated word '{m.Groups[1].Value}'.", $"Delete the extra '{m.Groups[1].Value}'."));
 
             string trimmed = text.TrimEnd();
-            if (!trimmed.EndsWith("."))
+            if (!trimmed.EndsWith(".", StringComparison.Ordinal))
                 findings.Add(Finding.At(c, Math.Max(0, trimmed.Length - 1), 1, FindingType.Formatting, Severity.Warning,
                     $"Claim {c.Number} does not end with a period."));
-            else if (trimmed.EndsWith(".."))
+            else if (trimmed.EndsWith("..", StringComparison.Ordinal))
                 findings.Add(Finding.At(c, trimmed.Length - 2, 2, FindingType.Formatting, Severity.Warning,
                     $"Claim {c.Number} ends with more than one period."));
 

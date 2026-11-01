@@ -158,7 +158,7 @@ namespace LLDOCX.Claims
 
         static void CheckPlurality(Claim claim, NounPhrase p, NounPhrase basis, List<Finding> findings)
         {
-            if (PluralCapable.Contains(basis.Determiner) || p.Determiner.StartsWith("each")) return;
+            if (PluralCapable.Contains(basis.Determiner) || p.Determiner.StartsWith("each", StringComparison.Ordinal)) return;
             if (p.IsPluralForm == basis.IsPluralForm) return;
             string pForm = p.IsPluralForm ? "plural" : "singular";
             string bForm = basis.IsPluralForm ? "plural" : "singular";
@@ -172,7 +172,7 @@ namespace LLDOCX.Claims
             if (Units.Contains(p.HeadKey)) return true;
             if (p.Words.Count == 1 && (p.Head == "latter" || p.Head == "former")) return true;
             string key = p.Key;
-            return allow.Any(a => key == a || key.StartsWith(a + " "));
+            return allow.Any(a => key == a || key.StartsWith(a + " ", StringComparison.Ordinal));
         }
 
         static string NormalizeAllowEntry(string entry)

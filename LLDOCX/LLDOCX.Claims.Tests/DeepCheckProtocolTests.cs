@@ -107,6 +107,33 @@ public class DeepCheckProtocolTests
     public void IsWellFormed_checks_the_response_shape(string json, bool expected) =>
         Assert.AreEqual(expected, DeepCheckResponseParser.IsWellFormed(json));
 
+
+    [TestMethod]
+    public void Non_integer_claim_is_not_well_formed_and_parse_throws_deepcheck_exception()
+    {
+        const string json = """{"findings":[{"claim":1.5,"type":"Antecedent","severity":"Error","quote":"q","message":"m","suggestion":""}],"disputes":[]}""";
+        Assert.IsFalse(DeepCheckResponseParser.IsWellFormed(json));
+        Assert.ThrowsException<DeepCheckException>(() =>
+            DeepCheckResponseParser.Parse(json, T.Claims(Line), new List<Finding>()));
+    }
+
+    [TestMethod]
+    public void Non_integer_dispute_index_is_not_well_formed()
+    {
+        const string json = """{"findings":[],"disputes":[{"index":0.5,"reason":"r"}]}""";
+        Assert.IsFalse(DeepCheckResponseParser.IsWellFormed(json));
+        Assert.ThrowsException<DeepCheckException>(() =>
+            DeepCheckResponseParser.Parse(json, T.Claims(Line), new List<Finding> { new Finding { ClaimNumber = 1, Message = "x" } }));
+    }
+
+    [TestMethod]
+    public void Non_object_elements_are_skipped_by_parse_and_rejected_by_is_well_formed()
+    {
+        const string json = """{"findings":[5,{"claim":1,"type":"Terminology","severity":"Warning","quote":"the shade","message":"m","suggestion":"s"}],"disputes":["x"]}""";
+        Assert.IsFalse(DeepCheckResponseParser.IsWellFormed(json));
+        var added = DeepCheckResponseParser.Parse(json, T.Claims(Line), new List<Finding>());
+        Assert.AreEqual(1, added.Count);
+    }
     // ---- HTTP client ----
 
     static (DeepCheckHttpClient client, StubHandler handler) NewClient(Func<HttpRequestMessage, HttpResponseMessage> respond)
