@@ -20,7 +20,7 @@ internal static class T
 
     public static string Joined(params string[] lines) => string.Join("\n", lines);
 
-    public static List<Claim> Claims(params string[] lines) => throw new NotImplementedException(); // restored in Task 3
+    public static List<Claim> Claims(params string[] lines) => ClaimParser.Parse(Paras(lines));
 
     public static bool Has(IEnumerable<Finding> findings, int claim, Severity severity, string text) =>
         findings.Any(f => f.ClaimNumber == claim && f.Severity == severity &&
