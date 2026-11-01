@@ -17,4 +17,3 @@
     <None Update="Fixtures\*.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
-

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace LLDOCX.Claims
 {
@@ -64,7 +65,7 @@ namespace LLDOCX.Claims
         {
             if (IsAllowed(p, allow)) return;
             // The subject of a dependent claim ("The sodium salt of the compound of claim 1") is the claim's own term.
-            if (p.Start == 0 && claim.DependsOn.Count > 0) return;
+            if (p.Start == 0 && claim.DependsOn.Count > 0 && AnchoredToClaimReference(claim.FullText, p)) return;
 
             var exact = known.FirstOrDefault(k => k.Key == p.Key);
             if (exact != null)
@@ -72,6 +73,9 @@ namespace LLDOCX.Claims
                 if (reportPlurality) CheckPlurality(claim, p, exact, findings);
                 return;
             }
+
+            // The extractor stops before a plural-looking word ("said conduit | programs"); accept it if the longer term is known.
+            if (ExtendsToKnown(claim.FullText, p, known)) return;
 
             var mods = p.ModifierKeys;
             var candidates = known
@@ -92,7 +96,7 @@ namespace LLDOCX.Claims
             }
 
             var weak = known.FirstOrDefault(k => k.HeadKey == p.HeadKey)
-                       ?? known.FirstOrDefault(k => k.ModifierKeys.Contains(p.HeadKey));
+                       ?? known.FirstOrDefault(k => k.ModifierKeys.Contains(p.HeadKey) && IsCoordinatedModifier(claim.FullText, p, k));
             if (weak != null)
             {
                 findings.Add(Finding.At(claim, p.Start, p.Length, FindingType.Antecedent, Severity.Info,
@@ -116,6 +120,40 @@ namespace LLDOCX.Claims
                 : $"Introduce it first (e.g. 'a {p.WordsText}') or correct the term.";
             findings.Add(Finding.At(claim, p.Start, p.Length, FindingType.Antecedent, Severity.Error,
                 $"No antecedent basis for '{p.Text}'.", suggestion));
+        }
+
+        static readonly Regex ClaimAnchor = new Regex(
+            @"\G\s*(?:of|according\s+to|as\s+(?:claimed|recited|defined|set\s+forth|described)\s+in|in)\s+(?:(?:the|a|an)\s+)?(?:[\w-]+\s+){0,5}?claims?\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>True for "The X of claim N" / "The X of the Y of claim N": the opening subject is tied to a claim reference.</summary>
+        static bool AnchoredToClaimReference(string text, NounPhrase p) =>
+            ClaimAnchor.Match(text, p.Start + p.Length).Success;
+
+        /// <summary>True for elliptical coordination: "said front and rear sections" where "front" modifies the known "front section".</summary>
+        static bool IsCoordinatedModifier(string text, NounPhrase p, NounPhrase known)
+        {
+            var tokens = TextUtil.Tokenize(text);
+            int end = p.Start + p.Length;
+            int i = 0;
+            while (i < tokens.Count && tokens[i].Index < end) i++;
+            int guard = 0;
+            while (i < tokens.Count && guard++ < 4 && !(tokens[i].IsWord && (tokens[i].Lower == "and" || tokens[i].Lower == "or"))) i++;
+            if (i >= tokens.Count || !tokens[i].IsWord || (tokens[i].Lower != "and" && tokens[i].Lower != "or")) return false;
+            for (int k = i + 1, n = 0; k < tokens.Count && n < 3 && tokens[k].IsWord; k++, n++)
+                if (TextUtil.Singularize(tokens[k].Lower) == known.HeadKey) return true;
+            return false;
+        }
+
+        static bool ExtendsToKnown(string text, NounPhrase p, List<NounPhrase> known)
+        {
+            var tokens = TextUtil.Tokenize(text);
+            int end = p.Start + p.Length;
+            int i = 0;
+            while (i < tokens.Count && tokens[i].Index < end) i++;
+            if (i >= tokens.Count || !tokens[i].IsWord) return false;
+            string extended = p.Key + " " + TextUtil.Singularize(tokens[i].Lower);
+            return known.Any(k => k.Key == extended);
         }
 
         static void CheckPlurality(Claim claim, NounPhrase p, NounPhrase basis, List<Finding> findings)

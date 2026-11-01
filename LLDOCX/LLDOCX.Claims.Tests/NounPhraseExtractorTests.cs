@@ -68,4 +68,12 @@ public class NounPhraseExtractorTests
         Assert.AreEqual("stored partitioning information", p[0].Key, string.Join(" | ", p.Select(x => x.Key)));
         Assert.AreEqual("selected sensor", p[1].Key, string.Join(" | ", p.Select(x => x.Key)));
     }
+
+    [TestMethod]
+    public void Postnominal_participle_ends_the_phrase()
+    {
+        var p = NounPhraseExtractor.Extract("the signal corresponding to the sensor");
+        Assert.AreEqual("signal", p[0].Key, string.Join(" | ", p.Select(x => x.Key)));
+        Assert.AreEqual("sensor", p[1].Key);
+    }
 }

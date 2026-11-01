@@ -129,4 +129,27 @@ public class AntecedentCheckerTests
         var f = Check("1. A lamp comprising a base and a shade, wherein the latter is green.");
         Assert.AreEqual(0, f.Count(x => x.Severity == Severity.Error), T.Dump(f));
     }
+
+    [TestMethod]
+    public void Modifier_of_known_phrase_is_not_enough_to_excuse_a_reference()
+    {
+        var f = Check("1. A lamp comprising a sensor housing, wherein the sensor is black.");
+        Assert.IsTrue(T.Has(f, 1, Severity.Error, "No antecedent basis for 'the sensor'"), T.Dump(f));
+    }
+
+    [TestMethod]
+    public void Dependent_claim_subject_without_claim_anchor_is_still_checked()
+    {
+        var f = Check(
+            "1. A lamp comprising a base.",
+            "2. The widget is red, as in claim 1.");
+        Assert.IsTrue(T.Has(f, 2, Severity.Error, "No antecedent basis for 'The widget'"), T.Dump(f));
+    }
+
+    [TestMethod]
+    public void Plural_noun_cut_off_by_extractor_still_matches_known_compound()
+    {
+        var f = Check("1. A system comprising at least one conduit program and a list of said conduit programs.");
+        Assert.AreEqual(0, f.Count(x => x.Severity == Severity.Error), T.Dump(f));
+    }
 }

@@ -69,11 +69,10 @@ namespace LLDOCX.Claims
             "means", "series", "species", "lens", "gas", "chassis", "bias", "canvas", "atlas"
         };
 
-        /// <summary>Adjectives (positional or participial) that look like -ing/-ed words and may precede a plural noun.</summary>
+        /// <summary>Positional adjectives that may precede a plural noun. (Participial modifiers are handled only in leading position.)</summary>
         static readonly HashSet<string> ModifierWords = new HashSet<string>
         {
-            "upper", "lower", "left", "right", "outer", "inner", "front", "rear", "top", "bottom", "corresponding",
-            "underlying", "overlying", "respective", "remaining", "existing", "resulting"
+            "upper", "lower", "left", "right", "outer", "inner", "front", "rear", "top", "bottom", "respective"
         };
 
         static readonly Regex ClaimRefAfter = new Regex(
