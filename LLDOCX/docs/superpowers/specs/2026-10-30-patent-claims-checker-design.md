@@ -92,11 +92,15 @@ class ClaimsAnalyzer { AnalysisResult Analyze(IList<RawParagraph> paragraphs, Cl
 - A claim starts at a paragraph matching `^\s*(\d+)\s*[.)]\s+`. Following paragraphs that don't match are joined to the current claim, so claim elements on separate lines stay in their claim.
 - Status markers right after the number are recognized: `(Canceled)`, `(Cancelled)`, `(Withdrawn)`, `(Original)`, `(Previously Presented)`, `(Currently Amended)`, `(New)`. Canceled claims are kept for numbering checks and skipped by content checks.
 - The preamble is the text before the first transition (`comprising`, `consisting of`, `consisting essentially of`, `including`, `wherein`, `characterized in that`, `having`), ending at a colon or comma.
-- Dependency references are matched with patterns covering:
+- Dependency references are found anywhere in the claim text, not only in the preamble (user decision, 2026-11-01). So "A system comprising a processor configured to perform the method of claim 1" depends on claim 1.
+  - A referenced claim that is an ancestor of another referenced claim is dropped. "The method of claim 2, wherein the composition of claim 1…", where claim 2 depends on claim 1, depends only on claim 2 and is not multiple dependent.
+  - A cumulative ("and") reference is detected only within a single reference or between adjacent references, not across unrelated text.
+  - Referenced claim numbers are limited to 4 digits, and implausibly large ranges are ignored.
+- The patterns cover:
   - `(of|in|according to|as (claimed|recited|defined|set forth) in) claim N`
   - `claims N or M`, `claims N, M, or P`
   - `any (one )?of claims N(-|–|to|through)M`
-  - `any (one )?of the preceding claims`, which resolves to all earlier claims
+  - `any (one )?of the preceding claims` and `any preceding/previous claim`, which resolve to all earlier claims
 - Category is determined from the first noun of the preamble:
   - `method` or `process` → Method
   - `system`, `apparatus`, `device`, `assembly`, `machine` (and similar) → Apparatus
@@ -154,7 +158,7 @@ The phrase ends at a boundary token: a preposition (`of`, `to`, `for`, `in`, `on
 | "a/an X" when X was already introduced in the chain | Warning |
 | "the X" with no match but a close match exists | Error, with a suggestion ("did you mean 'the fastening member'?") |
 
-**Allowlist** (no antecedent needed; editable in Settings): `the user`, `the art`, `the same`, `the following`, `the foregoing`, `the group`, `the presence`, `the absence`, `the range`, `the order`. An entry matches a phrase equal to it or starting with it ("the same temperature"). Phrases whose head noun is a unit of measure are also exempt.
+**Allowlist** (no antecedent needed; editable in Settings): `the user`, `the art`, `the same`, `the following`, `the foregoing`, `the group`, `the presence`, `the absence`, `the range`, `the order`. The adjective-style entries `the same`, `the following` and `the foregoing` match a phrase equal to them or starting with them ("the same temperature"). All other entries match only the exact phrase, so `the user` does not exempt "the user interface" (user decision, 2026-11-01). Phrases whose head noun is a unit of measure are also exempt.
 
 **Singular/plural drift** is detected during this pass, because the match is already known at this point. It is reported with type Terminology and controlled by the terminology toggle.
 

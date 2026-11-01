@@ -167,12 +167,15 @@ namespace LLDOCX.Claims
                 $"Use 'the {basis.WordsText}'."));
         }
 
+        // Adjective-style entries that may be followed by a noun; every other entry must match exactly.
+        static readonly HashSet<string> PrefixStyle = new HashSet<string> { "same", "following", "foregoing" };
+
         static bool IsAllowed(NounPhrase p, List<string> allow)
         {
             if (Units.Contains(p.HeadKey)) return true;
             if (p.Words.Count == 1 && (p.Head == "latter" || p.Head == "former")) return true;
             string key = p.Key;
-            return allow.Any(a => key == a || key.StartsWith(a + " ", StringComparison.Ordinal));
+            return allow.Any(a => key == a || (PrefixStyle.Contains(a) && key.StartsWith(a + " ", StringComparison.Ordinal)));
         }
 
         static string NormalizeAllowEntry(string entry)

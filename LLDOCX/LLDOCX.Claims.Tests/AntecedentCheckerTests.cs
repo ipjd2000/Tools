@@ -152,4 +152,16 @@ public class AntecedentCheckerTests
         var f = Check("1. A system comprising at least one conduit program and a list of said conduit programs.");
         Assert.AreEqual(0, f.Count(x => x.Severity == Severity.Error), T.Dump(f));
     }
+
+    [TestMethod]
+    public void Allowlist_is_exact_except_for_adjective_style_entries()
+    {
+        var f = Check("1. A device comprising a processor, wherein the user interface is displayed.");
+        Assert.IsTrue(T.Has(f, 1, Severity.Error, "'the user interface'"), T.Dump(f));
+
+        f = Check("1. A device comprising a processor, wherein the user is notified at the same temperature.");
+        Assert.AreEqual(0, f.Count, T.Dump(f));
+        f = Check("1. A device comprising a processor, wherein the same temperature is used.");
+        Assert.AreEqual(0, f.Count, T.Dump(f));
+    }
 }
