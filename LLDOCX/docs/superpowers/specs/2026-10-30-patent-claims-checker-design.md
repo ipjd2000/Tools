@@ -54,7 +54,7 @@ ClaimsPaneControl (new CustomTaskPane) ← DeepCheckService merges AI findings
 - **LLDOCX.Claims** (new netstandard2.0 class library): all parsing and checking. Input is plain text with offsets; output is findings. Testable without Word.
 - **LLDOCX.DeepCheck** (new netstandard2.0 class library): the wire contract shared by the add-in and the gateway. It holds the request and response DTOs, the response parser and validator, and the mapping of AI findings back to document offsets. It has no Anthropic SDK reference.
 - **LLDOCX.Gateway** (new Azure Functions app, .NET 8 isolated worker): validates tokens, enforces limits, builds the prompt, calls Claude and returns findings. It is the only component that references the Anthropic SDK.
-- **LLDOCX.Claims.Tests** (new, MSTest on net8.0): tests of the engine, the Deep Check contract and the gateway's request handling, run with `dotnet test`.
+- **LLDOCX.Claims.Tests** and **LLDOCX.Gateway.Tests** (new, MSTest on net10.0): tests of the engine and the Deep Check contract, and of the gateway's request handling (kept separate so engine tests carry no Azure or Anthropic packages). They run with `dotnet test`.
 - The add-in moves from .NET Framework 4.6.1 to **4.7.2**, as required by MSAL's broker package (Sign-In Gate) and the netstandard2.0 libraries.
 
 ### Core types (LLDOCX.Claims)
@@ -191,12 +191,12 @@ The pane shows findings at or above the minimum severity set in Settings. The de
 ### Add-in → gateway
 
 - `POST {gatewayUrl}` with `Authorization: Bearer <token>`. The token comes from `ITokenSource.GetGatewayTokenAsync()` (Sign-In Gate), audience is the gateway API and the scope is `DeepCheck.Use`.
-- **Request body (`DeepCheckRequest`):** `{ claims: [{ number, text }], offlineFindings: [{ index, claimNumber, type, message, text }] }`.
-- **Response body (`DeepCheckResponse`):** `{ findings: [{ claimNumber, type, severity, message, suggestion, quotedText }], disputes: [{ index, reason }] }`.
-- **Error responses** are `{ error: { code, message } }` with HTTP 400 (too large or invalid), 401/403 (token or role), 429 (per-user limit, with `Retry-After`), 422 (`refused`: the model declined) and 502/503 (upstream failure).
+- **Request body (`DeepCheckRequest`):** `{ claims: [{ number, text, canceled }], ruleFindings: [{ claim, type, severity, message }] }`. A rule finding's position in the list is its index.
+- **Response body (`DeepCheckResponse`):** `{ findings: [{ claim, type, severity, quote, message, suggestion }], disputes: [{ index, reason }] }`. This is Claude's structured-output schema, which the gateway checks and passes through.
+- **Error responses** are `{ error: { code, message } }` with HTTP 400 (too large or invalid), 401/403 (token or role), 429 (per-user limit, with `Retry-After`), 422 (`refused`: the model declined), 502 (`truncated` or `bad_upstream_response`), 503 (`upstream_unavailable`) and 504 (`timeout`).
 - The add-in sends no model name, prompt or credentials. It cannot choose or change them.
 - AI findings are mapped back to document offsets. The AI returns the claim number and the quoted text, and the offset is found by searching within that claim's text. Findings that can't be located are shown without navigation.
-- Network work runs off the UI thread, with a cancellable progress indicator. The HTTP timeout is 5 minutes.
+- Network work runs off the UI thread, with a cancellable progress indicator. The HTTP timeout is 240 seconds. Azure stops HTTP requests after about 230 seconds, so the gateway gives up on Claude at 210 seconds and returns 504 `timeout`.
 
 ### Gateway (LLDOCX.Gateway)
 
@@ -219,15 +219,15 @@ The pane shows findings at or above the minimum severity set in Settings. The de
   - user content: the numbered claims plus the offline findings with their indexes.
 - **Provider** (`ClaudeProvider` app setting):
   - `Foundry` (preferred): `AnthropicFoundryClient` from the `Anthropic.Foundry` NuGet package, calling a Claude deployment in lozaip.com's Microsoft Foundry resource. It authenticates with the Function App's managed identity, so no key exists. If the SDK's Foundry client can't use a managed identity, the fallback is a Foundry key stored in Key Vault.
-  - `Anthropic`: `AnthropicClient` with the API key read from Azure Key Vault through a Key Vault reference in app settings. It enables server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`), which Foundry does not support.
+  - `Anthropic`: `AnthropicClient` with the API key read from Azure Key Vault through a Key Vault reference in app settings. Both providers use the standard Messages call without server-side refusal fallback, which Foundry does not support, so a refusal is handled the same way for either.
 - **Refusals:** the gateway checks `stop_reason` for `refusal` before reading content. A refusal returns 422 `refused`.
 - **Logging:** Application Insights records the user's `oid`/UPN, the timestamp, claim count, input size, latency and outcome. It **never** records claim text or the model's output, since unfiled claims are confidential.
 - **App settings** (Azure configuration, admin-controlled):
   - `TenantId`, `Audience`, `RequiredRole`
-  - `ClaudeProvider`, `FoundryEndpoint`, `Model`, `Effort`
+  - `ClaudeProvider`, `FoundryResource` (the resource name), `Model`, `Effort`, `ClaudeTimeoutSeconds` (default 210)
   - `AnthropicApiKey`: a Key Vault reference, used only by the `Anthropic` provider
   - `MaxInputChars`, `RequestsPerUserPerHour`
-- **Hosting:** an Azure Functions Flex Consumption or Premium plan, HTTPS only, with the managed identity enabled. The function timeout is at least 5 minutes, because Deep Check calls can be long.
+- **Hosting:** an Azure Functions Flex Consumption or Premium plan, HTTPS only, with the managed identity enabled. The function timeout is 5 minutes, but the platform's roughly 230-second HTTP limit is the effective cap.
 - **Still to verify** (the plan begins with a spike):
   - that `claude-opus-5-5` is deployable in Foundry in lozaip.com's region;
   - which authentication options `AnthropicFoundryClient` supports;
@@ -255,14 +255,14 @@ The pane shows findings at or above the minimum severity set in Settings. The de
 | Deep Check: 400 too large | "The claims are too long for Deep Check (limit N characters)." |
 | Deep Check: 429 | "Deep Check limit reached; try again in N minutes." |
 | Deep Check: 422 refused | "Claude declined to review these claims." Offline findings are kept |
-| Deep Check: 502/503/timeout/no network | Message; offline findings are kept |
+| Deep Check: 502/503/504/timeout/no network | Message; offline findings are kept |
 | Deep Check: response doesn't match the contract | Message; offline findings are kept |
 | Gateway: Claude 429/5xx | The SDK retries, then the gateway returns 503 |
 | Document edited after a check | Affected findings marked stale when clicked |
 
 ## Testing
 
-- **LLDOCX.Claims.Tests** (MSTest, net8.0). The tests are inline claim sets with assertions on claim number, severity, and a substring of the message. They cover:
+- **LLDOCX.Claims.Tests** (MSTest, net10.0). The tests are inline claim sets with assertions on claim number, severity, and a substring of the message. They cover:
   - a clean claim set (zero findings)
   - missing antecedent, ambiguous first/second, re-introduction, weak head-noun match
   - multiple dependent chains, including the forbidden multiple-on-multiple case
@@ -272,7 +272,7 @@ The pane shows findings at or above the minimum severity set in Settings. The de
   - status markers and canceled claims
 - **False-positive guard:** at least three real claim sets from issued patents must produce zero Errors.
 - Unit tests for the parser (numbering, joining paragraphs, dependency patterns, categories) and for noun-phrase extraction.
-- **Gateway tests,** with the Claude client and token validation behind interfaces. They cover:
+- **Gateway tests** (LLDOCX.Gateway.Tests), with the Claude client and token validation behind interfaces. They cover:
   - token rules (wrong tenant, missing scope, missing role);
   - the size limit;
   - the per-user rate limit;

@@ -2,40 +2,58 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a "Check Claims" tool to the LLDOCX Word add-in. It finds the patent claims in the active document and reports antecedent basis, claim dependency, and terminology/typo problems in a task pane. An optional "Deep Check" sends the claims to Claude.
+**Goal:** Add a "Check Claims" tool to the LLDOCX Word add-in. It finds the patent claims in the active document and reports antecedent basis, claim dependency, and terminology/typo problems in a task pane. An optional "Deep Check" sends the claims, after confirmation, to lozaip.com's Azure gateway, which has them reviewed by Claude.
 
-**Architecture:** A pure C# engine (`LLDOCX.Claims`, netstandard2.0, no Office references) parses claims and runs the checks on plain text with document offsets. `LLDOCX.DeepCheck` (netstandard2.0) wraps the Anthropic SDK call and its prompt and response protocol. The VSTO add-in (`LLDOCX`, retargeted to .NET Framework 4.7.2) reads paragraphs from Word, calls the engine on a background thread, and shows the findings in a new task pane. `LLDOCX.Claims.Tests` (net8.0, MSTest) tests the engine and the Deep Check protocol with `dotnet test`.
+**Architecture:**
+- **`LLDOCX.Claims`** (netstandard2.0, no Office references) is a pure C# engine. It parses the claims and runs the checks on plain text with document offsets.
+- **`LLDOCX.DeepCheck`** (netstandard2.0) holds the wire contract shared by the add-in and the gateway, plus the add-in's HTTP client.
+- **`LLDOCX.Gateway`** (an Azure Function on .NET 10) validates the user's Entra token, enforces limits, and calls Claude through Microsoft Foundry or the Anthropic API. The model, prompt and credentials live only there.
+- **The VSTO add-in** (`LLDOCX`, on .NET Framework 4.7.2 and gated by the sign-in gate) reads paragraphs from Word, runs the engine on a background thread, and shows the findings in a new task pane.
+- **`LLDOCX.Claims.Tests` and `LLDOCX.Gateway.Tests`** (net10.0, MSTest) run with `dotnet test`.
 
-**Tech Stack:** C# / .NET Framework 4.7.2 VSTO (Word interop, WinForms), netstandard2.0 class libraries, MSTest on net8.0, `Anthropic` NuGet SDK 13.3.0, DPAPI (`System.Security.Cryptography.ProtectedData`).
+**Tech Stack:**
+- Add-in: C# / .NET Framework 4.7.2 VSTO (Word interop, WinForms).
+- Libraries and tests: netstandard2.0 class libraries, `System.Text.Json`, MSTest on net10.0.
+- Gateway: Azure Functions isolated worker on .NET 10, with the `Anthropic` and `Anthropic.Foundry` NuGet SDKs, `Azure.Identity` and `Microsoft.IdentityModel.*`.
 
 **Spec:** `LLDOCX/docs/superpowers/specs/2026-10-30-patent-claims-checker-design.md`
 
+**Prerequisite:** the sign-in gate plan, `LLDOCX/docs/superpowers/plans/2026-11-01-lldocx-sign-in-gate.md`, must be complete. It tracks the source, retargets the add-in to 4.7.2, installs the .NET 10 SDK, and adds `ThisAddIn.Gate`, `ThisAddIn.GateConfig`, `EnsureUnlockedAsync`, `HideAllPanes` and the per-machine installer.
+
 ## Global Constraints
 
-- All paths below are relative to the repository root `Tools/`. Shell commands run from `Tools/LLDOCX/` unless a step says otherwise.
-- The add-in target framework becomes **.NET Framework 4.7.2**. The `Anthropic` 13.3.0 SDK ships `netstandard2.0`, and its dependencies need .NET Framework 4.6.2 or later.
-- `LLDOCX.Claims` must not reference Office, WinForms, or the Anthropic SDK.
-- Default Claude model: `claude-opus-5-5`. Deep Check uses `output_config.effort = high`, structured outputs (`output_config.format`), and server-side refusal fallback (`fallbacks: "default"` with beta `server-side-fallback-2026-07-01`).
-- No claims text is sent to Claude without the confirmation dialog. The only exception is a document the user marked "Don't ask again" during the current session.
-- The Claude API key is stored only in `%APPDATA%\LL-Docx\claude.key`, encrypted with DPAPI (CurrentUser scope). It is never written to the BinaryFormatter settings file `LLDocx.dll`.
-- The tool never modifies the document.
-- Existing Scan behavior is unchanged.
-- `Severity` enum values are ordered: `Error = 0`, `Warning = 1`, `Info = 2`. A severity filter keeps findings with `Severity <= minimum`.
-- Commit after every task. Each commit message ends with:
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
-- Use the branch `feature/patent-claims-checker`. It already exists and holds the spec commit.
+- **Paths and shell:** all paths below are relative to the repository root `Tools/`. Shell commands run from `Tools/LLDOCX/` unless a step says otherwise.
+- **Target frameworks:**
+  - The add-in targets **.NET Framework 4.7.2**, set by the gate plan.
+  - Libraries target **netstandard2.0**.
+  - Test projects and the gateway target **net10.0**.
+- **Dependencies:**
+  - `LLDOCX.Claims` must not reference Office, WinForms, the Anthropic SDK, or `LLDOCX.DeepCheck`.
+  - Only `LLDOCX.Gateway` references the Anthropic SDK. The add-in contains no Claude model setting, prompt, or credential.
+- **Deep Check on the gateway:**
+  - The default model is `claude-opus-5-5` (gateway app setting `Gateway__Model`).
+  - Requests use `output_config.effort = high` and structured outputs (`output_config.format`).
+  - `stop_reason` is checked for `refusal` (returned as 422) and `max_tokens` (returned as 502).
+- **Gateway access:** the gateway accepts only Entra tokens from the lozaip.com tenant with the `DeepCheck.Use` scope (and the `RequiredRole`, when one is set). Claim text and Claude's output are never logged.
+- **Consent:** no claims text leaves the PC without the confirmation dialog. The only exception is a document the user marked "Don't ask again" during the current session.
+- **Gating:** every new ribbon button is gated by the sign-in gate (`getEnabled="GetEnabled"`), and each action starts with `EnsureUnlockedAsync()`.
+- **The tool never modifies the document.**
+- **Existing Scan behavior is unchanged.**
+- **Severity order:** `Severity` enum values are `Error = 0`, `Warning = 1`, `Info = 2`. A severity filter keeps findings with `Severity <= minimum`.
+- **Commits:** commit after every task. Each commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **Branch:** use `feature/patent-claims-checker`, which already exists.
 
 ## Build and test environment
 
-- **Engine and tests (Tasks 2–9):** need the .NET 8 SDK. This machine currently has only the `dotnet` runtime. Task 2 installs the SDK.
-- **VSTO add-in (Tasks 1, 10, 11, 12):** needs Visual Studio 2022 with the **Office/SharePoint development** workload and the **.NET Framework 4.7.2 targeting pack**. This machine has only VS Build Tools with neither, so those tasks are built, run, and verified in Visual Studio by a human (F5 starts Word with the add-in loaded). Each of those tasks ends with an explicit manual verification checklist.
+- **Engine, contract and gateway with their tests (Tasks 2–10):** need the .NET 10 SDK, which the gate plan's Task 2 installs. They run with `dotnet test`.
+- **VSTO add-in and installer (Tasks 11, 12, 13):** need Visual Studio 2022 with the **Office/SharePoint development** workload, the **.NET Framework 4.7.2 targeting pack**, and the WiX 3 extension. This machine has only VS Build Tools, so a human builds, runs and verifies those tasks in Visual Studio; F5 starts Word with the add-in loaded. Each ends with a manual verification checklist.
+- **Azure deployment (Task 14):** needs lozaip.com's Azure subscription and an administrator. It follows the guide written in that task.
 
 ## File Structure
 
 ```
 LLDOCX/
-  .gitignore                                   (new) ignore .vs/, bin/, obj/, *.user, *.pfx
-  LLDOCX.sln                                   (modify) add 3 projects
+  LLDOCX.sln                                   (modify) add Claims, Claims.Tests, DeepCheck, Gateway, Gateway.Tests
   LLDOCX.Claims/                               (new) engine, netstandard2.0
     LLDOCX.Claims.csproj
     Models.cs              enums, RawParagraph, TextSegment, Claim, Finding
@@ -46,93 +64,77 @@ LLDOCX/
     AntecedentChecker.cs   antecedent findings (+ singular/plural drift)
     TerminologyChecker.cs  spelling variants, said/the mix, formatting
     ClaimsAnalyzer.cs      ClaimsCheckOptions, AnalysisResult, Analyze()
-  LLDOCX.DeepCheck/                            (new) Claude integration, netstandard2.0
+  LLDOCX.DeepCheck/                            (new) gateway wire contract + client, netstandard2.0
     LLDOCX.DeepCheck.csproj
     DeepCheckException.cs
-    DeepCheckPrompt.cs     system prompt, JSON schema, user message builder
-    DeepCheckResponseParser.cs  JSON -> findings + disputes
-    DeepCheckClient.cs     Anthropic SDK call + error mapping
-  LLDOCX.Claims.Tests/                         (new) MSTest, net8.0
+    DeepCheckContract.cs   DeepCheckRequest, ClaimDto, RuleFindingDto, ErrorBody, ErrorCodes
+    DeepCheckRequestBuilder.cs  claims + rule findings -> request
+    DeepCheckResponseParser.cs  response JSON -> findings + disputes; IsWellFormed
+    DeepCheckHttpClient.cs      POST to the gateway + error mapping
+  LLDOCX.Claims.Tests/                         (new) MSTest, net10.0
     LLDOCX.Claims.Tests.csproj
     TestHelpers.cs
     TextUtilTests.cs, ClaimParserTests.cs, DependencyCheckerTests.cs,
     NounPhraseExtractorTests.cs, AntecedentCheckerTests.cs,
     TerminologyCheckerTests.cs, ClaimsAnalyzerTests.cs, DeepCheckProtocolTests.cs
+  LLDOCX.Gateway/                              (new) Azure Functions isolated worker, net10.0
+    LLDOCX.Gateway.csproj, host.json, local.settings.sample.json
+    GatewayOptions.cs      app settings (Gateway__*)
+    DeepCheckPrompt.cs     system prompt, JSON schema, user message builder
+    TokenValidator.cs      Entra JWT validation (tenant, audience, scope, role)
+    UserRateLimiter.cs     per-user hourly limit
+    ClaudeReviewer.cs      Anthropic / Foundry SDK call
+    DeepCheckHandler.cs    request pipeline (testable)
+    DeepCheckFunction.cs   HTTP trigger POST /api/deepcheck
+    Program.cs             DI + App Insights
+  LLDOCX.Gateway.Tests/                        (new) MSTest, net10.0
+    LLDOCX.Gateway.Tests.csproj, GatewayTests.cs
   LLDOCX/                                      (existing VSTO add-in)
-    LLDOCX.csproj                              (modify) 4.7.2, LangVersion, refs, new files
-    ThisAddIn.cs                               (modify) claims pane, controller, sync context
-    RibbonExplorer.xml / RibbonExplorer.cs     (modify) two buttons + callbacks
+    LLDOCX.csproj                              (modify) project refs, new files
+    ThisAddIn.cs                               (modify) claims pane, controller
+    RibbonExplorer.xml / RibbonExplorer.cs     (modify) two gated buttons + callbacks
     Options/SettingOption.cs                   (modify) claims settings fields
     CustomUserControl/SettingUserControl.cs    (modify) preserve claims settings on save
-    Options/ApiKeyStore.cs                     (new) DPAPI key storage
     Helpers/ClaimsExtractor.cs                 (new) Word -> RawParagraph list
     Helpers/ClaimsController.cs                (new) orchestrates check + deep check
     CustomUserControl/ClaimsPaneControl.cs     (new) findings tab + settings tab
     CustomUserControl/ClaimsSettingsPanel.cs   (new) claims settings UI
-    CustomUserControl/ApiKeyDialog.cs          (new) API key entry dialog
     CustomUserControl/DeepCheckConfirmDialog.cs (new) consent dialog
-  LLDOCXSetup/Product.wxs                      (modify) ship new DLLs + LLDOCX.dll.config
+  LLDOCX.Auth/GateConfig.cs                    (modify, Task 14) compiled gateway URL + scope
+  LLDOCXSetup/Product.wxs                      (modify) ship claims DLLs
+  docs/admin/deep-check-setup.md               (new) Azure + Entra setup for Deep Check
 ```
 
 ---
 
-### Task 1: Track the LLDOCX source and retarget to .NET Framework 4.7.2
+### Task 1: Confirm the sign-in gate is in place
 
-**Files:**
-- Create: `LLDOCX/.gitignore`
-- Modify: `LLDOCX/LLDOCX/LLDOCX.csproj` (TargetFrameworkVersion, LangVersion, binding redirects)
+This task replaces the original Task 1. Tracking the source and retargeting to 4.7.2 moved to the sign-in gate plan.
+
+**Files:** none
 
 **Interfaces:**
-- Consumes: nothing
-- Produces: the add-in source tracked in git; the add-in builds against .NET Framework 4.7.2 with `LangVersion` latest. Later tasks add references to this csproj.
+- Consumes: the completed sign-in gate plan
+- Produces: confirmation that the prerequisites exist
 
-- [ ] **Step 1: Create `LLDOCX/.gitignore`**
+- [ ] **Step 1: Check the prerequisites**
 
-```gitignore
-.vs/
-bin/
-obj/
-*.user
-*.suo
-*.pfx
-packages/
-TestResults/
-```
-
-- [ ] **Step 2: Retarget and enable binding redirects in `LLDOCX/LLDOCX/LLDOCX.csproj`**
-
-Change line 30 from:
-
-```xml
-    <TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion>
-```
-
-to:
-
-```xml
-    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
-    <LangVersion>latest</LangVersion>
-    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
-    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
-    <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
-```
-
-- [ ] **Step 3: Verify in Visual Studio (manual)**
-
-Open `LLDOCX/LLDOCX.sln` in Visual Studio 2022. Build → Rebuild Solution.
-Expected: build succeeds. Press F5: Word opens and the Home tab shows the LL-Docx group with **Scan** and **Settings**. Click **Scan** on any document: it behaves as before.
-
-- [ ] **Step 4: Commit**
-
-Run from `Tools/`:
+Run, from `Tools/LLDOCX/`:
 
 ```bash
-git add LLDOCX/.gitignore LLDOCX/LLDOCX.sln LLDOCX/LLDOCX LLDOCX/LLDOCXSetup
-git status --short   # confirm LLDOCX_TemporaryKey.pfx and .vs/ are NOT listed
-git commit -m "chore(lldocx): track add-in source, retarget to .NET Framework 4.7.2
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+dotnet --list-sdks
+git log --oneline -12
+grep -n "EnsureUnlockedAsync\|HideAllPanes\|GateConfig" LLDOCX/ThisAddIn.cs
+dotnet test LLDOCX.Auth.Tests
 ```
+
+Expected:
+- `dotnet --list-sdks` shows a `10.0.` SDK.
+- The log shows the gate plan's commits, from "track add-in source" through "per-machine x64 MSI".
+- `ThisAddIn.cs` contains all three members.
+- The Auth tests pass.
+
+If any check fails, finish the sign-in gate plan first. Nothing to commit.
 
 ---
 
@@ -161,11 +163,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `static class TextUtil`: `List<Token> Tokenize(string)`, `string Singularize(string lowerWord)`, `bool IsPlural(string lowerWord)`, `int Levenshtein(string, string)`
   - Test helpers `T.Paras(params string[])`, `T.Claims(params string[])`, `T.Joined(params string[])`, `T.Has(findings, claim, severity, text)`, `T.Dump(findings)`
 
-- [ ] **Step 1: Install the .NET 8 SDK**
+- [ ] **Step 1: Confirm the .NET 10 SDK**
 
-Run: `winget install --id Microsoft.DotNet.SDK.8 -e --accept-source-agreements --accept-package-agreements`
-Then, in a new shell: `dotnet --list-sdks`
-Expected: a line starting with `8.0.`
+The gate plan's Task 2 installed it. Run: `dotnet --list-sdks`
+Expected: a line starting with `10.0.` If it's missing, run `winget install --id Microsoft.DotNet.SDK.10 -e --accept-source-agreements --accept-package-agreements`, open a new shell, and check again.
 
 - [ ] **Step 2: Create the engine project file `LLDOCX/LLDOCX.Claims/LLDOCX.Claims.csproj`**
 
@@ -184,7 +185,7 @@ Expected: a line starting with `8.0.`
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <IsPackable>false</IsPackable>
@@ -2059,24 +2060,39 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 9: Deep Check library (prompt, response parser, Claude client)
+### Task 9: Deep Check contract and gateway client (LLDOCX.DeepCheck)
 
 **Files:**
 - Create: `LLDOCX/LLDOCX.DeepCheck/LLDOCX.DeepCheck.csproj`
 - Create: `LLDOCX/LLDOCX.DeepCheck/DeepCheckException.cs`
-- Create: `LLDOCX/LLDOCX.DeepCheck/DeepCheckPrompt.cs`
+- Create: `LLDOCX/LLDOCX.DeepCheck/DeepCheckContract.cs`
+- Create: `LLDOCX/LLDOCX.DeepCheck/DeepCheckRequestBuilder.cs`
 - Create: `LLDOCX/LLDOCX.DeepCheck/DeepCheckResponseParser.cs`
-- Create: `LLDOCX/LLDOCX.DeepCheck/DeepCheckClient.cs`
+- Create: `LLDOCX/LLDOCX.DeepCheck/DeepCheckHttpClient.cs`
 - Modify: `LLDOCX/LLDOCX.Claims.Tests/LLDOCX.Claims.Tests.csproj` (add project reference)
 - Test: `LLDOCX/LLDOCX.Claims.Tests/DeepCheckProtocolTests.cs`
 
 **Interfaces:**
-- Consumes: `Claim`, `Finding`, `Finding.At`, `FindingType`, `Severity`, `ClaimParser` (Tasks 2–3)
-- Produces (namespace `LLDOCX.DeepCheck`):
-  - `class DeepCheckException : Exception` (user-facing message)
-  - `static class DeepCheckPrompt { const string SystemPrompt; const string ResponseSchemaJson; static string BuildUserMessage(IList<Claim> claims, IList<Finding> ruleFindings); }`
-  - `static class DeepCheckResponseParser { static List<Finding> Parse(string json, IList<Claim> claims, IList<Finding> ruleFindings); }`. It returns new AI findings (`Source = "AI"`, `DocStart = -1` when the quote isn't found) and sets `DisputedByAI` and `DisputeReason` on the disputed `ruleFindings` in place.
-  - `static class DeepCheckClient { const string DefaultModel = "claude-opus-5-5"; static Task<List<Finding>> RunAsync(string apiKey, string model, IList<Claim> claims, IList<Finding> ruleFindings, CancellationToken ct); }`
+- Consumes: `Claim`, `Finding`, `Finding.At`, `FindingType`, `Severity` (Task 2); `T.Claims` (Task 3)
+- Produces (namespace `LLDOCX.DeepCheck`; used by the gateway in Task 10 and by the add-in in Task 12):
+  - `class DeepCheckException : Exception` (its message is user-facing)
+  - The wire DTOs:
+    - `DeepCheckRequest { List<ClaimDto> Claims; List<RuleFindingDto> RuleFindings; }`
+    - `ClaimDto { int Number; string Text; bool Canceled; }`
+    - `RuleFindingDto { int Claim; string Type; string Severity; string Message; }`
+    - `ErrorBody { ErrorDetail Error; }` and `ErrorDetail { string Code; string Message; }`
+    - JSON names are camelCase: `claims`, `ruleFindings`, `number`, `text`, `canceled`, `claim`, `type`, `severity`, `message`, `error`, `code`.
+  - `static class ErrorCodes` (string constants)
+  - `static class DeepCheckRequestBuilder`:
+    - `DeepCheckRequest Build(IList<Claim> claims, IList<Finding> ruleFindings)`;
+    - `int TextLength(DeepCheckRequest request)`.
+  - `static class DeepCheckResponseParser`:
+    - `List<Finding> Parse(string json, IList<Claim> claims, IList<Finding> ruleFindings)` returns new AI findings (`Source = "AI"`, `DocStart = -1` when the quote isn't found), and sets `DisputedByAI`/`DisputeReason` on disputed `ruleFindings` in place;
+    - `bool IsWellFormed(string json)`.
+  - The response body is `{ findings: [{ claim, type, severity, quote, message, suggestion }], disputes: [{ index, reason }] }`.
+  - `sealed class DeepCheckHttpClient(HttpClient http)`:
+    - `static readonly TimeSpan DefaultTimeout` (240 s);
+    - `Task<List<Finding>> RunAsync(string gatewayUrl, string bearerToken, IList<Claim> claims, IList<Finding> ruleFindings, CancellationToken ct)`, which throws `DeepCheckException` with the spec's user messages.
 
 - [ ] **Step 1: Create `LLDOCX/LLDOCX.DeepCheck/LLDOCX.DeepCheck.csproj` and wire up references**
 
@@ -2084,17 +2100,23 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
+    <LangVersion>7.3</LangVersion>
     <RootNamespace>LLDOCX.DeepCheck</RootNamespace>
   </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="Anthropic" Version="13.3.0" />
-  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LLDOCX.Claims\LLDOCX.Claims.csproj" />
   </ItemGroup>
 </Project>
 ```
+
+Run:
+
+```bash
+dotnet add LLDOCX.DeepCheck package System.Text.Json
+dotnet sln LLDOCX.sln add LLDOCX.DeepCheck/LLDOCX.DeepCheck.csproj
+```
+
+Expected: `PackageReference for package 'System.Text.Json' ... added` and `Project ... added to the solution.`
 
 Add to the test csproj's project-reference `ItemGroup`:
 
@@ -2102,43 +2124,73 @@ Add to the test csproj's project-reference `ItemGroup`:
     <ProjectReference Include="..\LLDOCX.DeepCheck\LLDOCX.DeepCheck.csproj" />
 ```
 
-Run: `dotnet sln LLDOCX.sln add LLDOCX.DeepCheck/LLDOCX.DeepCheck.csproj`
-Expected: `Project ... added to the solution.`
-
 - [ ] **Step 2: Write the failing tests `LLDOCX/LLDOCX.Claims.Tests/DeepCheckProtocolTests.cs`**
 
 ```csharp
+using System.Net;
+using System.Text.Json;
 using LLDOCX.Claims;
 using LLDOCX.DeepCheck;
 
 namespace LLDOCX.Claims.Tests;
 
+internal sealed class StubHandler : HttpMessageHandler
+{
+    public Func<HttpRequestMessage, HttpResponseMessage> Respond { get; set; }
+    public HttpRequestMessage LastRequest { get; private set; }
+    public string LastBody { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        LastRequest = request;
+        LastBody = request.Content == null ? null : await request.Content.ReadAsStringAsync(ct);
+        return Respond(request);
+    }
+}
+
 [TestClass]
 public class DeepCheckProtocolTests
 {
     const string Line = "1. A lamp comprising a base, wherein the shade is green.";
+    const string Url = "https://gw.example.net/api/deepcheck";
+    const string OkJson = """{"findings":[{"claim":1,"type":"Terminology","severity":"Warning","quote":"the shade","message":"m","suggestion":"s"}],"disputes":[{"index":0,"reason":"r"}]}""";
+
+    static HttpResponseMessage Json(HttpStatusCode status, string body) =>
+        new(status) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
+
+    // ---- request ----
 
     [TestMethod]
-    public void User_message_lists_claims_and_indexed_rule_findings()
+    public void Request_lists_claims_canceled_claims_and_rule_findings_in_order()
     {
         var claims = T.Claims(Line, "2. (Canceled)");
         var rule = new List<Finding> { new Finding { ClaimNumber = 1, Type = FindingType.Antecedent, Severity = Severity.Error, Message = "No antecedent basis for 'the shade'." } };
-        string msg = DeepCheckPrompt.BuildUserMessage(claims, rule);
-        StringAssert.Contains(msg, "1. A lamp comprising a base");
-        StringAssert.Contains(msg, "2. (Canceled)");
-        StringAssert.Contains(msg, "[0] claim 1, Antecedent, Error: No antecedent basis for 'the shade'.");
+        var r = DeepCheckRequestBuilder.Build(claims, rule);
+        Assert.AreEqual(2, r.Claims.Count);
+        StringAssert.StartsWith(r.Claims[0].Text, "A lamp comprising a base");
+        Assert.IsTrue(r.Claims[1].Canceled);
+        Assert.AreEqual("", r.Claims[1].Text);
+        Assert.AreEqual("Antecedent", r.RuleFindings[0].Type);
+        Assert.AreEqual("Error", r.RuleFindings[0].Severity);
+        Assert.AreEqual(r.Claims[0].Text.Length, DeepCheckRequestBuilder.TextLength(r));
     }
+
+    [TestMethod]
+    public void Request_serializes_with_camel_case_names()
+    {
+        string json = JsonSerializer.Serialize(DeepCheckRequestBuilder.Build(T.Claims(Line), new List<Finding>()));
+        StringAssert.Contains(json, "\"claims\":[{\"number\":1,");
+        StringAssert.Contains(json, "\"ruleFindings\":[]");
+    }
+
+    // ---- response ----
 
     [TestMethod]
     public void Parser_maps_quotes_to_document_offsets_and_applies_disputes()
     {
         var claims = T.Claims(Line);
         var rule = new List<Finding> { new Finding { ClaimNumber = 1, Message = "x" } };
-        const string json = """
-            {"findings":[{"claim":1,"type":"Terminology","severity":"Warning","quote":"the shade","message":"m","suggestion":"s"}],
-             "disputes":[{"index":0,"reason":"r"}]}
-            """;
-        var added = DeepCheckResponseParser.Parse(json, claims, rule);
+        var added = DeepCheckResponseParser.Parse(OkJson, claims, rule);
         Assert.AreEqual(1, added.Count);
         Assert.AreEqual(Line.IndexOf("the shade"), added[0].DocStart);
         Assert.AreEqual("the shade", added[0].Text);
@@ -2152,9 +2204,8 @@ public class DeepCheckProtocolTests
     [TestMethod]
     public void Parser_keeps_findings_whose_quote_is_not_found_without_location()
     {
-        var claims = T.Claims(Line);
         const string json = """{"findings":[{"claim":1,"type":"Antecedent","severity":"Error","quote":"not there","message":"m","suggestion":""}],"disputes":[]}""";
-        var added = DeepCheckResponseParser.Parse(json, claims, new List<Finding>());
+        var added = DeepCheckResponseParser.Parse(json, T.Claims(Line), new List<Finding>());
         Assert.AreEqual(-1, added[0].DocStart);
         Assert.IsNull(added[0].Suggestion);
     }
@@ -2174,20 +2225,131 @@ public class DeepCheckProtocolTests
             DeepCheckResponseParser.Parse("not json", T.Claims(Line), new List<Finding>()));
     }
 
-    [TestMethod]
-    public void Schema_is_valid_json_with_required_fields()
+    [DataTestMethod]
+    [DataRow(OkJson, true)]
+    [DataRow("""{"findings":[],"disputes":[]}""", true)]
+    [DataRow("""{"findings":[]}""", false)]
+    [DataRow("""{"findings":[{"claim":"1","type":"Antecedent","severity":"Error","quote":"q","message":"m","suggestion":""}],"disputes":[]}""", false)]
+    [DataRow("""{"findings":[],"disputes":[{"index":0}]}""", false)]
+    [DataRow("[]", false)]
+    [DataRow("not json", false)]
+    public void IsWellFormed_checks_the_response_shape(string json, bool expected) =>
+        Assert.AreEqual(expected, DeepCheckResponseParser.IsWellFormed(json));
+
+    // ---- HTTP client ----
+
+    static (DeepCheckHttpClient client, StubHandler handler) NewClient(Func<HttpRequestMessage, HttpResponseMessage> respond)
     {
-        using var doc = System.Text.Json.JsonDocument.Parse(DeepCheckPrompt.ResponseSchemaJson);
-        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToArray();
-        CollectionAssert.AreEquivalent(new[] { "findings", "disputes" }, required);
+        var handler = new StubHandler { Respond = respond };
+        return (new DeepCheckHttpClient(new HttpClient(handler)), handler);
+    }
+
+    [TestMethod]
+    public async Task Client_posts_json_with_bearer_token_and_parses_findings()
+    {
+        var (client, handler) = NewClient(_ => Json(HttpStatusCode.OK, OkJson));
+        var rule = new List<Finding> { new Finding { ClaimNumber = 1, Message = "x" } };
+        var added = await client.RunAsync(Url, "tok123", T.Claims(Line), rule, CancellationToken.None);
+        Assert.AreEqual(1, added.Count);
+        Assert.AreEqual(HttpMethod.Post, handler.LastRequest.Method);
+        Assert.AreEqual(Url, handler.LastRequest.RequestUri.ToString());
+        Assert.AreEqual("Bearer", handler.LastRequest.Headers.Authorization.Scheme);
+        Assert.AreEqual("tok123", handler.LastRequest.Headers.Authorization.Parameter);
+        StringAssert.Contains(handler.LastBody, "\"ruleFindings\":[{\"claim\":1,");
+    }
+
+    static async Task<string> FailureMessage(HttpResponseMessage response)
+    {
+        var (client, _) = NewClient(_ => response);
+        var ex = await Assert.ThrowsExceptionAsync<DeepCheckException>(() =>
+            client.RunAsync(Url, "t", T.Claims(Line), new List<Finding>(), CancellationToken.None));
+        return ex.Message;
+    }
+
+    [TestMethod]
+    public async Task Client_maps_401_and_403_to_not_authorized()
+    {
+        Assert.AreEqual("Your account isn't authorized for Deep Check. Contact your administrator.",
+            await FailureMessage(Json(HttpStatusCode.Unauthorized, "{}")));
+        Assert.AreEqual("Your account isn't authorized for Deep Check. Contact your administrator.",
+            await FailureMessage(Json(HttpStatusCode.Forbidden, "{}")));
+    }
+
+    [TestMethod]
+    public async Task Client_maps_429_using_retry_after()
+    {
+        var response = Json((HttpStatusCode)429, """{"error":{"code":"rate_limited","message":"x"}}""");
+        response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(90));
+        Assert.AreEqual("Deep Check limit reached; try again in 2 minutes.", await FailureMessage(response));
+    }
+
+    [TestMethod]
+    public async Task Client_maps_422_to_declined()
+    {
+        Assert.AreEqual("Claude declined to review these claims. The rule-based findings are unchanged.",
+            await FailureMessage(Json((HttpStatusCode)422, """{"error":{"code":"refused","message":"x"}}""")));
+    }
+
+    [TestMethod]
+    public async Task Client_shows_the_gateway_message_for_400()
+    {
+        Assert.AreEqual("The claims are too long for Deep Check (limit 200,000 characters). The rule-based findings are unchanged.",
+            await FailureMessage(Json(HttpStatusCode.BadRequest,
+                """{"error":{"code":"too_large","message":"The claims are too long for Deep Check (limit 200,000 characters)."}}""")));
+    }
+
+    [TestMethod]
+    public async Task Client_uses_a_generic_message_for_5xx_without_body()
+    {
+        Assert.AreEqual("The Deep Check service had a problem. Try again shortly. The rule-based findings are unchanged.",
+            await FailureMessage(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
+    }
+
+    [TestMethod]
+    public async Task Client_maps_network_failure()
+    {
+        Assert.AreEqual("Could not reach the Deep Check service. Check your network connection.",
+            await FailureFromThrow(new HttpRequestException("no route")));
+    }
+
+    [TestMethod]
+    public async Task Client_maps_timeout()
+    {
+        Assert.AreEqual("Deep Check took too long and was stopped. Try checking a selection of claims.",
+            await FailureFromThrow(new TaskCanceledException("timeout")));
+    }
+
+    [TestMethod]
+    public async Task Client_rethrows_user_cancellation()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var (client, _) = NewClient(_ => throw new TaskCanceledException());
+        try
+        {
+            await client.RunAsync(Url, "t", T.Claims(Line), new List<Finding>(), cts.Token);
+            Assert.Fail("Expected cancellation.");
+        }
+        catch (OperationCanceledException)
+        {
+            // HttpClient may surface TaskCanceledException or OperationCanceledException; both mean the user canceled.
+        }
+    }
+
+    static async Task<string> FailureFromThrow(Exception toThrow)
+    {
+        var (client, _) = NewClient(_ => throw toThrow);
+        var ex = await Assert.ThrowsExceptionAsync<DeepCheckException>(() =>
+            client.RunAsync(Url, "t", T.Claims(Line), new List<Finding>(), CancellationToken.None));
+        return ex.Message;
     }
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `dotnet test LLDOCX.Claims.Tests --filter DeepCheckProtocolTests`
-Expected: build FAILS with `The type or namespace name 'DeepCheckPrompt' could not be found`.
+Expected: the build FAILS with `The type or namespace name 'DeepCheckRequestBuilder' could not be found`.
 
 - [ ] **Step 4: Write `LLDOCX/LLDOCX.DeepCheck/DeepCheckException.cs`**
 
@@ -2204,88 +2366,99 @@ namespace LLDOCX.DeepCheck
 }
 ```
 
-- [ ] **Step 5: Write `LLDOCX/LLDOCX.DeepCheck/DeepCheckPrompt.cs`**
+- [ ] **Step 5: Write `LLDOCX/LLDOCX.DeepCheck/DeepCheckContract.cs`**
 
 ```csharp
 using System.Collections.Generic;
-using System.Text;
-using LLDOCX.Claims;
+using System.Text.Json.Serialization;
 
 namespace LLDOCX.DeepCheck
 {
-    public static class DeepCheckPrompt
+    /// <summary>Body of POST {gatewayUrl}. Shared by the add-in (sender) and the gateway (receiver).</summary>
+    public sealed class DeepCheckRequest
     {
-        public const string SystemPrompt =
-            "You review the claims of a US patent application for three kinds of problems only:\n" +
-            "1. Antecedent basis: every element referred to with 'the' or 'said' must be introduced earlier in the same claim " +
-            "or in a claim it depends on (for a multiple dependent claim, in every claim it refers to); references must not be ambiguous.\n" +
-            "2. Claim dependency: references to missing, later, or canceled claims; multiple dependent claims that refer to claims " +
-            "cumulatively or depend on another multiple dependent claim (37 CFR 1.75(c)); dependent claims whose category or preamble " +
-            "does not match the claim they depend on.\n" +
-            "3. Terminology: typos and inconsistent names for the same element.\n\n" +
-            "An automated rule checker has already reviewed the claims. Its findings are listed with indexes in <rule_findings>. " +
-            "Put in `findings` only problems the rule checker missed. Put in `disputes` the index of each rule finding that is a " +
-            "false positive, with a one-sentence reason. For every finding, `quote` must be an exact substring of that claim's text, " +
-            "as short as possible while unique within the claim. `suggestion` is a concrete fix, or an empty string. " +
-            "Do not comment on patentability, claim scope, or style. If there is nothing to report, return empty arrays.";
-
-        public const string ResponseSchemaJson = @"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""findings"": {
-      ""type"": ""array"",
-      ""items"": {
-        ""type"": ""object"",
-        ""properties"": {
-          ""claim"": { ""type"": ""integer"" },
-          ""type"": { ""type"": ""string"", ""enum"": [""Antecedent"", ""Dependency"", ""Terminology"", ""Formatting""] },
-          ""severity"": { ""type"": ""string"", ""enum"": [""Error"", ""Warning"", ""Info""] },
-          ""quote"": { ""type"": ""string"" },
-          ""message"": { ""type"": ""string"" },
-          ""suggestion"": { ""type"": ""string"" }
-        },
-        ""required"": [""claim"", ""type"", ""severity"", ""quote"", ""message"", ""suggestion""],
-        ""additionalProperties"": false
-      }
-    },
-    ""disputes"": {
-      ""type"": ""array"",
-      ""items"": {
-        ""type"": ""object"",
-        ""properties"": {
-          ""index"": { ""type"": ""integer"" },
-          ""reason"": { ""type"": ""string"" }
-        },
-        ""required"": [""index"", ""reason""],
-        ""additionalProperties"": false
-      }
+        [JsonPropertyName("claims")] public List<ClaimDto> Claims { get; set; } = new List<ClaimDto>();
+        [JsonPropertyName("ruleFindings")] public List<RuleFindingDto> RuleFindings { get; set; } = new List<RuleFindingDto>();
     }
-  },
-  ""required"": [""findings"", ""disputes""],
-  ""additionalProperties"": false
-}";
 
-        public static string BuildUserMessage(IList<Claim> claims, IList<Finding> ruleFindings)
-        {
-            var sb = new StringBuilder();
-            sb.AppendLine("<claims>");
-            foreach (var c in claims)
-                sb.AppendLine(c.IsCanceled ? $"{c.Number}. (Canceled)" : $"{c.Number}. {c.FullText}");
-            sb.AppendLine("</claims>");
-            sb.AppendLine("<rule_findings>");
-            for (int i = 0; i < ruleFindings.Count; i++)
-            {
-                var f = ruleFindings[i];
-                sb.AppendLine($"[{i}] claim {f.ClaimNumber}, {f.Type}, {f.Severity}: {f.Message}");
-            }
-            sb.AppendLine("</rule_findings>");
-            return sb.ToString();
-        }
+    public sealed class ClaimDto
+    {
+        [JsonPropertyName("number")] public int Number { get; set; }
+        [JsonPropertyName("text")] public string Text { get; set; }
+        [JsonPropertyName("canceled")] public bool Canceled { get; set; }
+    }
+
+    /// <summary>An offline finding. Its position in the list is the index Claude uses for disputes.</summary>
+    public sealed class RuleFindingDto
+    {
+        [JsonPropertyName("claim")] public int Claim { get; set; }
+        [JsonPropertyName("type")] public string Type { get; set; }
+        [JsonPropertyName("severity")] public string Severity { get; set; }
+        [JsonPropertyName("message")] public string Message { get; set; }
+    }
+
+    /// <summary>Body of every non-200 gateway response.</summary>
+    public sealed class ErrorBody
+    {
+        [JsonPropertyName("error")] public ErrorDetail Error { get; set; }
+    }
+
+    public sealed class ErrorDetail
+    {
+        [JsonPropertyName("code")] public string Code { get; set; }
+        [JsonPropertyName("message")] public string Message { get; set; }
+    }
+
+    public static class ErrorCodes
+    {
+        public const string InvalidRequest = "invalid_request";
+        public const string TooLarge = "too_large";
+        public const string Unauthorized = "unauthorized";
+        public const string Forbidden = "forbidden";
+        public const string RateLimited = "rate_limited";
+        public const string Refused = "refused";
+        public const string Truncated = "truncated";
+        public const string Timeout = "timeout";
+        public const string UpstreamUnavailable = "upstream_unavailable";
+        public const string BadUpstreamResponse = "bad_upstream_response";
     }
 }
 ```
 
-- [ ] **Step 6: Write `LLDOCX/LLDOCX.DeepCheck/DeepCheckResponseParser.cs`**
+- [ ] **Step 6: Write `LLDOCX/LLDOCX.DeepCheck/DeepCheckRequestBuilder.cs`**
+
+```csharp
+using System.Collections.Generic;
+using System.Linq;
+using LLDOCX.Claims;
+
+namespace LLDOCX.DeepCheck
+{
+    public static class DeepCheckRequestBuilder
+    {
+        public static DeepCheckRequest Build(IList<Claim> claims, IList<Finding> ruleFindings)
+        {
+            var request = new DeepCheckRequest();
+            foreach (var c in claims)
+                request.Claims.Add(new ClaimDto { Number = c.Number, Text = c.IsCanceled ? "" : c.FullText, Canceled = c.IsCanceled });
+            foreach (var f in ruleFindings)
+                request.RuleFindings.Add(new RuleFindingDto
+                {
+                    Claim = f.ClaimNumber,
+                    Type = f.Type.ToString(),
+                    Severity = f.Severity.ToString(),
+                    Message = f.Message
+                });
+            return request;
+        }
+
+        public static int TextLength(DeepCheckRequest request) =>
+            request.Claims == null ? 0 : request.Claims.Sum(c => c?.Text?.Length ?? 0);
+    }
+}
+```
+
+- [ ] **Step 7: Write `LLDOCX/LLDOCX.DeepCheck/DeepCheckResponseParser.cs`**
 
 ```csharp
 using System;
@@ -2298,6 +2471,8 @@ namespace LLDOCX.DeepCheck
 {
     public static class DeepCheckResponseParser
     {
+        const string Unreadable = "Deep Check returned a response that could not be read. The rule-based findings are unchanged.";
+
         public static List<Finding> Parse(string json, IList<Claim> claims, IList<Finding> ruleFindings)
         {
             JsonDocument doc;
@@ -2307,13 +2482,15 @@ namespace LLDOCX.DeepCheck
             }
             catch (JsonException ex)
             {
-                throw new DeepCheckException("Claude returned a response that could not be read. The rule-based findings are unchanged.", ex);
+                throw new DeepCheckException(Unreadable, ex);
             }
 
             using (doc)
             {
-                var added = new List<Finding>();
                 var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) throw new DeepCheckException(Unreadable);
+
+                var added = new List<Finding>();
                 if (root.TryGetProperty("findings", out var findings) && findings.ValueKind == JsonValueKind.Array)
                     foreach (var f in findings.EnumerateArray())
                         added.Add(ToFinding(f, claims));
@@ -2331,6 +2508,37 @@ namespace LLDOCX.DeepCheck
                 return added;
             }
         }
+
+        /// <summary>True when json has the response schema's shape. The gateway checks this before returning Claude's output.</summary>
+        public static bool IsWellFormed(string json)
+        {
+            try
+            {
+                using (var doc = JsonDocument.Parse(json))
+                {
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object) return false;
+                    if (!root.TryGetProperty("findings", out var findings) || findings.ValueKind != JsonValueKind.Array) return false;
+                    if (!root.TryGetProperty("disputes", out var disputes) || disputes.ValueKind != JsonValueKind.Array) return false;
+                    foreach (var f in findings.EnumerateArray())
+                    {
+                        if (f.ValueKind != JsonValueKind.Object || !Is(f, "claim", JsonValueKind.Number)) return false;
+                        foreach (var name in new[] { "type", "severity", "quote", "message", "suggestion" })
+                            if (!Is(f, name, JsonValueKind.String)) return false;
+                    }
+                    foreach (var d in disputes.EnumerateArray())
+                        if (d.ValueKind != JsonValueKind.Object || !Is(d, "index", JsonValueKind.Number) || !Is(d, "reason", JsonValueKind.String))
+                            return false;
+                    return true;
+                }
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        static bool Is(JsonElement e, string name, JsonValueKind kind) => e.TryGetProperty(name, out var v) && v.ValueKind == kind;
 
         static Finding ToFinding(JsonElement f, IList<Claim> claims)
         {
@@ -2360,177 +2568,1230 @@ namespace LLDOCX.DeepCheck
 }
 ```
 
-- [ ] **Step 7: Run tests to verify they pass**
-
-Run: `dotnet test LLDOCX.Claims.Tests`
-Expected: all tests pass, 0 failed.
-
-- [ ] **Step 8: Write `LLDOCX/LLDOCX.DeepCheck/DeepCheckClient.cs`**
+- [ ] **Step 8: Write `LLDOCX/LLDOCX.DeepCheck/DeepCheckHttpClient.cs`**
 
 ```csharp
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Anthropic;
-using Anthropic.Exceptions;
-using Anthropic.Models.Beta.Messages;
 using LLDOCX.Claims;
 
 namespace LLDOCX.DeepCheck
 {
-    public static class DeepCheckClient
+    /// <summary>Calls the lozaip.com Deep Check gateway. No model, prompt, or Claude credential lives on the client.</summary>
+    public sealed class DeepCheckHttpClient
     {
-        public const string DefaultModel = "claude-opus-5-5";
+        /// <summary>Just above the gateway's own 210-second Claude timeout (Azure stops HTTP requests at about 230 seconds).</summary>
+        public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(240);
 
-        public static async Task<List<Finding>> RunAsync(string apiKey, string model, IList<Claim> claims,
+        const string Kept = " The rule-based findings are unchanged.";
+        readonly HttpClient _http;
+
+        public DeepCheckHttpClient(HttpClient http)
+        {
+            _http = http ?? throw new ArgumentNullException(nameof(http));
+        }
+
+        public async Task<List<Finding>> RunAsync(string gatewayUrl, string bearerToken, IList<Claim> claims,
             IList<Finding> ruleFindings, CancellationToken ct)
         {
-            if (string.IsNullOrWhiteSpace(apiKey))
-                throw new DeepCheckException("No Claude API key is set. Add one on the Settings tab of the Claims Check pane.");
-
-            string modelId = string.IsNullOrWhiteSpace(model) ? DefaultModel : model.Trim();
-            var schema = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(DeepCheckPrompt.ResponseSchemaJson);
-            var client = new AnthropicClient { ApiKey = apiKey };
-            var parameters = new MessageCreateParams
+            string body = JsonSerializer.Serialize(DeepCheckRequestBuilder.Build(claims, ruleFindings));
+            using (var request = new HttpRequestMessage(HttpMethod.Post, gatewayUrl))
             {
-                Model = modelId,
-                MaxTokens = 16000,
-                Betas = ["server-side-fallback-2026-07-01"],
-                Fallbacks = new Default(),
-                System = DeepCheckPrompt.SystemPrompt,
-                OutputConfig = new BetaOutputConfig
-                {
-                    Effort = Effort.High,
-                    Format = new BetaJsonOutputFormat { Schema = schema },
-                },
-                Messages = [new BetaUserMessageParam { Content = DeepCheckPrompt.BuildUserMessage(claims, ruleFindings) }],
-            };
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
 
-            BetaMessage response;
+                HttpResponseMessage response;
+                try
+                {
+                    response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+                }
+                catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+                {
+                    throw new DeepCheckException("Deep Check took too long and was stopped. Try checking a selection of claims.", ex);
+                }
+                catch (HttpRequestException ex)
+                {
+                    throw new DeepCheckException("Could not reach the Deep Check service. Check your network connection.", ex);
+                }
+
+                using (response)
+                {
+                    string text = response.Content == null ? "" : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    if (response.IsSuccessStatusCode) return DeepCheckResponseParser.Parse(text, claims, ruleFindings);
+                    throw new DeepCheckException(MessageFor((int)response.StatusCode, ServerMessage(text), response.Headers.RetryAfter?.Delta));
+                }
+            }
+        }
+
+        static string MessageFor(int status, string serverMessage, TimeSpan? retryAfter)
+        {
+            switch (status)
+            {
+                case 401:
+                case 403:
+                    return "Your account isn't authorized for Deep Check. Contact your administrator.";
+                case 422:
+                    return "Claude declined to review these claims." + Kept;
+                case 429:
+                    int minutes = retryAfter.HasValue ? Math.Max(1, (int)Math.Ceiling(retryAfter.Value.TotalMinutes)) : 60;
+                    return "Deep Check limit reached; try again in " + minutes + (minutes == 1 ? " minute." : " minutes.");
+                default:
+                    if (!string.IsNullOrWhiteSpace(serverMessage)) return serverMessage + Kept;
+                    return status >= 500
+                        ? "The Deep Check service had a problem. Try again shortly." + Kept
+                        : "Deep Check could not process these claims." + Kept;
+            }
+        }
+
+        static string ServerMessage(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body)) return null;
             try
             {
-                response = await client.Beta.Messages.Create(parameters, cancellationToken: ct).ConfigureAwait(false);
+                return JsonSerializer.Deserialize<ErrorBody>(body)?.Error?.Message;
             }
-            catch (AnthropicUnauthorizedException ex)
+            catch (JsonException)
             {
-                throw new DeepCheckException("The Claude API key was rejected. Check it on the Settings tab of the Claims Check pane.", ex);
+                return null;
             }
-            catch (AnthropicForbiddenException ex)
-            {
-                throw new DeepCheckException("The Claude API key does not have access to this model. Check the key and model ID in Settings.", ex);
-            }
-            catch (AnthropicNotFoundException ex)
-            {
-                throw new DeepCheckException($"Model '{modelId}' was not found. Check the model ID in Settings.", ex);
-            }
-            catch (AnthropicRateLimitException ex)
-            {
-                throw new DeepCheckException("Claude is rate-limiting requests. Wait a minute and try again.", ex);
-            }
-            catch (Anthropic5xxException ex)
-            {
-                throw new DeepCheckException("The Claude service had an error. Try again shortly.", ex);
-            }
-            catch (AnthropicIOException ex)
-            {
-                throw new DeepCheckException("Could not reach the Claude API. Check your network connection.", ex);
-            }
-            catch (AnthropicApiException ex)
-            {
-                throw new DeepCheckException("Claude API error: " + ex.Message, ex);
-            }
-
-            if (response.StopReason == "refusal")
-                throw new DeepCheckException("Claude declined to review these claims. The rule-based findings are unchanged.");
-            if (response.StopReason == "max_tokens")
-                throw new DeepCheckException("Claude's response was cut off because the claim set is very large. Check a selection of claims instead.");
-
-            var text = new StringBuilder();
-            foreach (var block in response.Content)
-                if (block.TryPickText(out BetaTextBlock t)) text.Append(t.Text);
-            return DeepCheckResponseParser.Parse(text.ToString(), claims, ruleFindings);
         }
     }
 }
 ```
 
-- [ ] **Step 9: Build and fix SDK binding names**
+- [ ] **Step 9: Run the tests to verify they pass**
 
-Run: `dotnet build LLDOCX.DeepCheck`
-Expected: `Build succeeded.` The SDK type and member names above come from the SDK's documented C# patterns and its XML docs. If the compiler reports an unknown name, look up the real one in `%USERPROFILE%\.nuget\packages\anthropic\13.3.0\lib\netstandard2.0\Anthropic.xml`, for example with `grep -n "BetaFallbacksParam\|T:Anthropic.Models.Beta.Messages.Default\|Exceptions\." Anthropic.xml`. Likely adjustments:
-- `Fallbacks = new Default()`: if `Default` has no public constructor, look for a static instance or an implicit conversion on `BetaFallbacksParam`. The intent is the `"default"` mode of the `fallbacks` request field.
-- The `Create(parameters, cancellationToken: ct)` parameter name.
-- `response.StopReason == "refusal"`: if `StopReason` is an `ApiEnum`, compare its raw string value.
-- Exception class names: their namespace is `Anthropic.Exceptions`.
+Run: `dotnet test LLDOCX.Claims.Tests`
+Expected: all tests pass, 0 failed.
 
-Re-run until `Build succeeded.`, then run `dotnet test LLDOCX.Claims.Tests` again. Expected: all pass.
-
-- [ ] **Step 10: Live smoke test (optional, needs an API key, costs one request)**
-
-Create a scratch console app outside the repo, for example in `%TEMP%\deepcheck-smoke`. Run `dotnet new console`, add a project reference to `LLDOCX.DeepCheck`, and put this in `Program.cs`:
-
-```csharp
-using LLDOCX.Claims;
-using LLDOCX.DeepCheck;
-var result = ClaimsAnalyzer.Analyze(new List<RawParagraph> {
-    new("1. A lamp comprising a base, wherein the shade is green.", 0) }, new ClaimsCheckOptions());
-var added = await DeepCheckClient.RunAsync(Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY"), null,
-    result.Claims, result.Findings, CancellationToken.None);
-Console.WriteLine($"AI findings: {added.Count}; disputed: {result.Findings.Count(f => f.DisputedByAI)}");
-```
-
-Run: `dotnet run`
-Expected: a line like `AI findings: 0; disputed: 0`, with no exception. Delete the scratch app afterwards.
-
-- [ ] **Step 11: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add LLDOCX/LLDOCX.sln LLDOCX/LLDOCX.DeepCheck LLDOCX/LLDOCX.Claims.Tests
-git commit -m "feat(deepcheck): add Claude Deep Check prompt, parser, and client
+git commit -m "feat(deepcheck): add gateway wire contract, response parser, and HTTP client
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 10: Add-in settings and API key storage
+### Task 10: Deep Check gateway (Azure Function)
 
 **Files:**
-- Modify: `LLDOCX/LLDOCX/LLDOCX.csproj` (project refs, System.Security, new Compile items)
-- Modify: `LLDOCX/LLDOCX/Options/SettingOption.cs`
-- Modify: `LLDOCX/LLDOCX/CustomUserControl/SettingUserControl.cs:107` (`SaveAllSettng`)
-- Create: `LLDOCX/LLDOCX/Options/ApiKeyStore.cs`
+- Create: `LLDOCX/LLDOCX.Gateway/LLDOCX.Gateway.csproj`, `host.json`, `local.settings.sample.json`
+- Create: `LLDOCX/LLDOCX.Gateway/GatewayOptions.cs`
+- Create: `LLDOCX/LLDOCX.Gateway/DeepCheckPrompt.cs`
+- Create: `LLDOCX/LLDOCX.Gateway/TokenValidator.cs`
+- Create: `LLDOCX/LLDOCX.Gateway/UserRateLimiter.cs`
+- Create: `LLDOCX/LLDOCX.Gateway/ClaudeReviewer.cs`
+- Create: `LLDOCX/LLDOCX.Gateway/DeepCheckHandler.cs`
+- Create: `LLDOCX/LLDOCX.Gateway/DeepCheckFunction.cs`
+- Create: `LLDOCX/LLDOCX.Gateway/Program.cs`
+- Create: `LLDOCX/LLDOCX.Gateway.Tests/LLDOCX.Gateway.Tests.csproj`
+- Test: `LLDOCX/LLDOCX.Gateway.Tests/GatewayTests.cs`
 
 **Interfaces:**
-- Consumes: `Severity`, `ClaimsCheckOptions.DefaultAllowlist` (Task 8), `DeepCheckClient.DefaultModel` (Task 9)
-- Produces:
-  - `SettingOption` properties: `bool ClaimsCheckAntecedent`, `bool ClaimsCheckDependency`, `bool ClaimsCheckTerminology`, `Severity ClaimsMinSeverity`, `List<string> ClaimsAllowlist`, `string DeepCheckModel`; method `void CopyClaimsSettingsFrom(SettingOption other)`; method `ClaimsCheckOptions ToClaimsCheckOptions()`
-  - `static class ApiKeyStore { string Load(); void Save(string key); void Clear(); }` (namespace `LLDOCX.Options`)
+- Consumes: `DeepCheckRequest`, `ClaimDto`, `RuleFindingDto`, `ErrorBody`, `ErrorDetail`, `ErrorCodes`, `DeepCheckRequestBuilder.TextLength`, `DeepCheckResponseParser.IsWellFormed` (Task 9)
+- Produces (namespace `LLDOCX.Gateway`):
+  - `sealed class GatewayOptions`:
+    - settings: `TenantId`, `Audience` (comma-separated), `RequiredScope` (= "DeepCheck.Use"), `RequiredRole`, `ClaudeProvider` ("Foundry" | "Anthropic"), `FoundryResource`, `AnthropicApiKey`;
+    - defaults: `Model` (= "claude-opus-5-5"), `Effort` (= "high"), `MaxOutputTokens` (= 16000), `MaxInputChars` (= 200000), `RequestsPerUserPerHour` (= 30), `ClaudeTimeoutSeconds` (= 210);
+    - `IReadOnlyList<string> Audiences`, `void Validate()`.
+  - `static class DeepCheckPrompt { const string SystemPrompt; const string ResponseSchemaJson; static string BuildUserMessage(DeepCheckRequest request); }`
+  - Token validation:
+    - `sealed class CallerIdentity(string objectId, string username)`;
+    - `enum AuthFailureKind { Unauthenticated, Forbidden }` and `sealed class AuthFailure(AuthFailureKind kind, string message) : Exception`;
+    - `interface ITokenValidator { Task<CallerIdentity> ValidateAsync(string authorizationHeader, CancellationToken ct); }`;
+    - `sealed class EntraTokenValidator(GatewayOptions, IConfigurationManager<OpenIdConnectConfiguration>)`, with `static CreateConfigurationManager(string tenantId)`.
+  - `sealed class UserRateLimiter(int perHour, Func<DateTime> utcNow) { bool TryAcquire(string userId, out TimeSpan retryAfter); }`
+  - Claude call:
+    - `enum ReviewOutcome { Ok, Refused, Truncated }` and `sealed class ReviewResult` (`Outcome`, `Json`; `static Ok(string)`, `Refused()`, `Truncated()`);
+    - `sealed class UpstreamException(string message, Exception inner) : Exception`;
+    - `interface IClaudeReviewer { Task<ReviewResult> ReviewAsync(string systemPrompt, string userMessage, string responseSchemaJson, CancellationToken ct); }`;
+    - `sealed class SdkClaudeReviewer : IClaudeReviewer`, with `static Create(GatewayOptions)`.
+  - Request handling:
+    - `sealed class HandlerResult(int status, string body, int? retryAfterSeconds = null)`, with `static Error(int status, string code, string message, int? retryAfterSeconds = null)`;
+    - `sealed class DeepCheckHandler(GatewayOptions, ITokenValidator, UserRateLimiter, IClaudeReviewer, ILogger<DeepCheckHandler>)` with `Task<HandlerResult> HandleAsync(string authorizationHeader, string body, CancellationToken ct)`.
+  - HTTP endpoint: `POST /api/deepcheck`
 
-- [ ] **Step 1: Add references and new files to `LLDOCX/LLDOCX/LLDOCX.csproj`**
+- [ ] **Step 1: Create the gateway and test project files**
 
-In the `ItemGroup` that holds `<Reference Include="System" />`, add:
+`LLDOCX/LLDOCX.Gateway/LLDOCX.Gateway.csproj`:
 
 ```xml
-    <Reference Include="System.Security" />
-```
-
-After the `ItemGroup` with `<Compile Include="CustomEvents\MissingHeadingHandler.cs" />`, add a new `ItemGroup`:
-
-```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AzureFunctionsVersion>v4</AzureFunctionsVersion>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <RootNamespace>LLDOCX.Gateway</RootNamespace>
+  </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\LLDOCX.Claims\LLDOCX.Claims.csproj" />
     <ProjectReference Include="..\LLDOCX.DeepCheck\LLDOCX.DeepCheck.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Update="host.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="local.settings.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="System.Threading.ExecutionContext" Alias="ExecutionContext" />
+  </ItemGroup>
+</Project>
 ```
 
-In the `ItemGroup` with the other `Compile` items, add:
+`LLDOCX/LLDOCX.Gateway/host.json`:
+
+```json
+{
+  "version": "2.0",
+  "functionTimeout": "00:05:00",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": { "isEnabled": true, "excludedTypes": "Request" }
+    }
+  }
+}
+```
+
+`LLDOCX/LLDOCX.Gateway/local.settings.sample.json`. To run locally, copy it to `local.settings.json`; that file is gitignored by the gate plan's Task 1.
+
+```json
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "Gateway__TenantId": "<lozaip.com tenant GUID>",
+    "Gateway__Audience": "api://<gateway client id>,<gateway client id>",
+    "Gateway__RequiredScope": "DeepCheck.Use",
+    "Gateway__RequiredRole": "",
+    "Gateway__ClaudeProvider": "Foundry",
+    "Gateway__FoundryResource": "<Foundry resource name>",
+    "Gateway__Model": "claude-opus-5-5",
+    "Gateway__Effort": "high"
+  }
+}
+```
+
+`LLDOCX/LLDOCX.Gateway.Tests/LLDOCX.Gateway.Tests.csproj`:
 
 ```xml
-    <Compile Include="Options\ApiKeyStore.cs" />
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="MSTest.TestAdapter" Version="3.6.1" />
+    <PackageReference Include="MSTest.TestFramework" Version="3.6.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LLDOCX.Gateway\LLDOCX.Gateway.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+Run, from `Tools/LLDOCX/`:
+
+```bash
+dotnet add LLDOCX.Gateway package Microsoft.Azure.Functions.Worker
+dotnet add LLDOCX.Gateway package Microsoft.Azure.Functions.Worker.Sdk
+dotnet add LLDOCX.Gateway package Microsoft.Azure.Functions.Worker.Extensions.Http
+dotnet add LLDOCX.Gateway package Microsoft.Azure.Functions.Worker.ApplicationInsights
+dotnet add LLDOCX.Gateway package Microsoft.ApplicationInsights.WorkerService
+dotnet add LLDOCX.Gateway package Microsoft.Extensions.Configuration.Binder
+dotnet add LLDOCX.Gateway package Anthropic
+dotnet add LLDOCX.Gateway package Anthropic.Foundry
+dotnet add LLDOCX.Gateway package Azure.Identity
+dotnet add LLDOCX.Gateway package Microsoft.IdentityModel.JsonWebTokens
+dotnet add LLDOCX.Gateway package Microsoft.IdentityModel.Protocols.OpenIdConnect
+dotnet sln LLDOCX.sln add LLDOCX.Gateway/LLDOCX.Gateway.csproj LLDOCX.Gateway.Tests/LLDOCX.Gateway.Tests.csproj
+```
+
+Expected: each command reports the package added, and the solution reports both projects added.
+
+- [ ] **Step 2: Write the failing tests `LLDOCX/LLDOCX.Gateway.Tests/GatewayTests.cs`**
+
+```csharp
+global using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Security.Cryptography;
+using System.Text.Json;
+using LLDOCX.DeepCheck;
+using LLDOCX.Gateway;
+using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Protocols;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.IdentityModel.Tokens;
+
+namespace LLDOCX.Gateway.Tests;
+
+internal sealed class CapturingLogger : ILogger<DeepCheckHandler>
+{
+    public List<string> Lines { get; } = new();
+    public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel logLevel) => true;
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter) =>
+        Lines.Add(formatter(state, exception) + " | " + state + " | " + exception);
+}
+
+internal sealed class FakeValidator : ITokenValidator
+{
+    public AuthFailure Failure { get; set; }
+    public Task<CallerIdentity> ValidateAsync(string authorizationHeader, CancellationToken ct) =>
+        Failure != null ? throw Failure : Task.FromResult(new CallerIdentity("oid-1", "pat@lozaip.com"));
+}
+
+internal sealed class FakeReviewer : IClaudeReviewer
+{
+    public Func<ReviewResult> Result { get; set; } = () => ReviewResult.Ok("""{"findings":[],"disputes":[]}""");
+    public string LastUserMessage { get; private set; }
+
+    public Task<ReviewResult> ReviewAsync(string systemPrompt, string userMessage, string responseSchemaJson, CancellationToken ct)
+    {
+        LastUserMessage = userMessage;
+        return Task.FromResult(Result());
+    }
+}
+
+[TestClass]
+public class PromptTests
+{
+    [TestMethod]
+    public void User_message_lists_claims_canceled_claims_and_indexed_rule_findings()
+    {
+        var request = new DeepCheckRequest
+        {
+            Claims = { new ClaimDto { Number = 1, Text = "A lamp comprising a base." }, new ClaimDto { Number = 2, Canceled = true, Text = "" } },
+            RuleFindings = { new RuleFindingDto { Claim = 1, Type = "Antecedent", Severity = "Error", Message = "No antecedent basis for 'the shade'." } }
+        };
+        string msg = DeepCheckPrompt.BuildUserMessage(request);
+        StringAssert.Contains(msg, "1. A lamp comprising a base.");
+        StringAssert.Contains(msg, "2. (Canceled)");
+        StringAssert.Contains(msg, "[0] claim 1, Antecedent, Error: No antecedent basis for 'the shade'.");
+    }
+
+    [TestMethod]
+    public void Schema_is_valid_json_with_required_fields()
+    {
+        using var doc = JsonDocument.Parse(DeepCheckPrompt.ResponseSchemaJson);
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToArray();
+        CollectionAssert.AreEquivalent(new[] { "findings", "disputes" }, required);
+    }
+}
+
+[TestClass]
+public class TokenValidatorTests
+{
+    const string Tenant = "11111111-1111-1111-1111-111111111111";
+    const string Audience = "api://gateway-app";
+    const string ClientIdAudience = "22222222-2222-2222-2222-222222222222";
+    static readonly RsaSecurityKey Key = new(RSA.Create(2048)) { KeyId = "test-key" };
+
+    static GatewayOptions Options(string role = null) =>
+        new() { TenantId = Tenant, Audience = Audience + "," + ClientIdAudience, RequiredRole = role };
+
+    static EntraTokenValidator Validator(GatewayOptions o)
+    {
+        var config = new OpenIdConnectConfiguration();
+        config.SigningKeys.Add(Key);
+        return new EntraTokenValidator(o, new StaticConfigurationManager<OpenIdConnectConfiguration>(config));
+    }
+
+    static string Token(Action<Dictionary<string, object>> edit = null, string issuer = null, string audience = Audience, DateTime? expires = null)
+    {
+        var claims = new Dictionary<string, object>
+        {
+            ["tid"] = Tenant,
+            ["oid"] = "oid-1",
+            ["preferred_username"] = "pat@lozaip.com",
+            ["scp"] = "User.Read DeepCheck.Use"
+        };
+        edit?.Invoke(claims);
+        DateTime exp = expires ?? DateTime.UtcNow.AddMinutes(30);
+        return new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        {
+            Issuer = issuer ?? $"https://login.microsoftonline.com/{Tenant}/v2.0",
+            Audience = audience,
+            Claims = claims,
+            NotBefore = exp.AddHours(-1),
+            IssuedAt = exp.AddHours(-1),
+            Expires = exp,
+            SigningCredentials = new SigningCredentials(Key, SecurityAlgorithms.RsaSha256)
+        });
+    }
+
+    static async Task<AuthFailureKind> Fails(EntraTokenValidator v, string header)
+    {
+        var ex = await Assert.ThrowsExceptionAsync<AuthFailure>(() => v.ValidateAsync(header, CancellationToken.None));
+        return ex.Kind;
+    }
+
+    [TestMethod]
+    public async Task Valid_token_returns_the_caller()
+    {
+        var caller = await Validator(Options()).ValidateAsync("Bearer " + Token(), CancellationToken.None);
+        Assert.AreEqual("oid-1", caller.ObjectId);
+        Assert.AreEqual("pat@lozaip.com", caller.Username);
+    }
+
+    [TestMethod]
+    public async Task Client_id_audience_is_also_accepted()
+    {
+        var caller = await Validator(Options()).ValidateAsync("Bearer " + Token(audience: ClientIdAudience), CancellationToken.None);
+        Assert.AreEqual("oid-1", caller.ObjectId);
+    }
+
+    [TestMethod]
+    public async Task Missing_or_malformed_header_is_unauthenticated()
+    {
+        Assert.AreEqual(AuthFailureKind.Unauthenticated, await Fails(Validator(Options()), null));
+        Assert.AreEqual(AuthFailureKind.Unauthenticated, await Fails(Validator(Options()), "Basic abc"));
+        Assert.AreEqual(AuthFailureKind.Unauthenticated, await Fails(Validator(Options()), "Bearer not-a-jwt"));
+    }
+
+    [TestMethod]
+    public async Task Other_tenant_is_unauthenticated()
+    {
+        const string other = "99999999-9999-9999-9999-999999999999";
+        string token = Token(c => c["tid"] = other, issuer: $"https://login.microsoftonline.com/{other}/v2.0");
+        Assert.AreEqual(AuthFailureKind.Unauthenticated, await Fails(Validator(Options()), "Bearer " + token));
+    }
+
+    [TestMethod]
+    public async Task Wrong_audience_is_unauthenticated()
+    {
+        Assert.AreEqual(AuthFailureKind.Unauthenticated, await Fails(Validator(Options()), "Bearer " + Token(audience: "api://other")));
+    }
+
+    [TestMethod]
+    public async Task Expired_token_is_unauthenticated()
+    {
+        Assert.AreEqual(AuthFailureKind.Unauthenticated,
+            await Fails(Validator(Options()), "Bearer " + Token(expires: DateTime.UtcNow.AddMinutes(-10))));
+    }
+
+    [TestMethod]
+    public async Task Missing_scope_is_forbidden()
+    {
+        Assert.AreEqual(AuthFailureKind.Forbidden, await Fails(Validator(Options()), "Bearer " + Token(c => c["scp"] = "User.Read")));
+    }
+
+    [TestMethod]
+    public async Task Required_role_is_enforced()
+    {
+        Assert.AreEqual(AuthFailureKind.Forbidden, await Fails(Validator(Options("DeepCheck.User")), "Bearer " + Token()));
+        var caller = await Validator(Options("DeepCheck.User"))
+            .ValidateAsync("Bearer " + Token(c => c["roles"] = new[] { "Other", "DeepCheck.User" }), CancellationToken.None);
+        Assert.AreEqual("oid-1", caller.ObjectId);
+    }
+}
+
+[TestClass]
+public class RateLimiterTests
+{
+    [TestMethod]
+    public void Allows_the_limit_then_blocks_with_retry_after()
+    {
+        var now = new DateTime(2026, 11, 1, 12, 0, 0, DateTimeKind.Utc);
+        var limiter = new UserRateLimiter(2, () => now);
+        Assert.IsTrue(limiter.TryAcquire("a", out _));
+        now = now.AddMinutes(10);
+        Assert.IsTrue(limiter.TryAcquire("a", out _));
+        Assert.IsFalse(limiter.TryAcquire("a", out var retry));
+        Assert.AreEqual(TimeSpan.FromMinutes(50), retry);
+        Assert.IsTrue(limiter.TryAcquire("b", out _), "users are independent");
+        now = now.AddMinutes(51);
+        Assert.IsTrue(limiter.TryAcquire("a", out _), "the window slides");
+    }
+}
+
+[TestClass]
+public class DeepCheckHandlerTests
+{
+    const string Secret = "ZZ-CONFIDENTIAL-CLAIM-TEXT-ZZ";
+    readonly FakeValidator _validator = new();
+    readonly FakeReviewer _reviewer = new();
+    readonly CapturingLogger _log = new();
+    readonly GatewayOptions _options = new()
+    {
+        TenantId = "11111111-1111-1111-1111-111111111111",
+        Audience = "api://gw",
+        MaxInputChars = 1000,
+        RequestsPerUserPerHour = 30
+    };
+
+    DeepCheckHandler NewHandler() =>
+        new(_options, _validator, new UserRateLimiter(_options.RequestsPerUserPerHour, () => DateTime.UtcNow), _reviewer, _log);
+
+    static string Body(string text = "A lamp comprising a base, wherein the shade is green. " + Secret) =>
+        JsonSerializer.Serialize(new DeepCheckRequest { Claims = { new ClaimDto { Number = 1, Text = text } } });
+
+    static ErrorDetail Error(HandlerResult r) => JsonSerializer.Deserialize<ErrorBody>(r.Body).Error;
+
+    [TestMethod]
+    public async Task Success_returns_claude_json_and_logs_metadata_only()
+    {
+        _reviewer.Result = () => ReviewResult.Ok("""{"findings":[{"claim":1,"type":"Antecedent","severity":"Error","quote":"the shade","message":"m","suggestion":""}],"disputes":[]}""");
+        var r = await NewHandler().HandleAsync("Bearer x", Body(), CancellationToken.None);
+        Assert.AreEqual(200, r.Status);
+        Assert.IsTrue(DeepCheckResponseParser.IsWellFormed(r.Body));
+        StringAssert.Contains(_reviewer.LastUserMessage, Secret);
+        Assert.IsTrue(_log.Lines.Any(l => l.Contains("ok") && l.Contains("pat@lozaip.com")), string.Join("\n", _log.Lines));
+        Assert.IsFalse(_log.Lines.Any(l => l.Contains(Secret) || l.Contains("the shade")), string.Join("\n", _log.Lines));
+    }
+
+    [TestMethod]
+    public async Task Auth_failures_map_to_401_and_403()
+    {
+        _validator.Failure = new AuthFailure(AuthFailureKind.Unauthenticated, "x");
+        Assert.AreEqual(401, (await NewHandler().HandleAsync(null, Body(), CancellationToken.None)).Status);
+        _validator.Failure = new AuthFailure(AuthFailureKind.Forbidden, "x");
+        var r = await NewHandler().HandleAsync("Bearer x", Body(), CancellationToken.None);
+        Assert.AreEqual(403, r.Status);
+        Assert.AreEqual(ErrorCodes.Forbidden, Error(r).Code);
+    }
+
+    [TestMethod]
+    public async Task Invalid_or_empty_request_is_400()
+    {
+        Assert.AreEqual(ErrorCodes.InvalidRequest, Error(await NewHandler().HandleAsync("Bearer x", "not json", CancellationToken.None)).Code);
+        Assert.AreEqual(ErrorCodes.InvalidRequest, Error(await NewHandler().HandleAsync("Bearer x", """{"claims":[]}""", CancellationToken.None)).Code);
+    }
+
+    [TestMethod]
+    public async Task Too_large_is_400_with_the_limit_in_the_message()
+    {
+        var r = await NewHandler().HandleAsync("Bearer x", Body(new string('a', 1001)), CancellationToken.None);
+        Assert.AreEqual(400, r.Status);
+        Assert.AreEqual(ErrorCodes.TooLarge, Error(r).Code);
+        StringAssert.Contains(Error(r).Message, "limit 1,000 characters");
+    }
+
+    [TestMethod]
+    public async Task Rate_limit_is_429_with_retry_after()
+    {
+        _options.RequestsPerUserPerHour = 1;
+        var handler = NewHandler();
+        Assert.AreEqual(200, (await handler.HandleAsync("Bearer x", Body(), CancellationToken.None)).Status);
+        var r = await handler.HandleAsync("Bearer x", Body(), CancellationToken.None);
+        Assert.AreEqual(429, r.Status);
+        Assert.IsTrue(r.RetryAfterSeconds > 3500);
+    }
+
+    [TestMethod]
+    public async Task Refusal_is_422()
+    {
+        _reviewer.Result = ReviewResult.Refused;
+        var r = await NewHandler().HandleAsync("Bearer x", Body(), CancellationToken.None);
+        Assert.AreEqual(422, r.Status);
+        Assert.AreEqual(ErrorCodes.Refused, Error(r).Code);
+    }
+
+    [TestMethod]
+    public async Task Truncation_is_502()
+    {
+        _reviewer.Result = ReviewResult.Truncated;
+        var r = await NewHandler().HandleAsync("Bearer x", Body(), CancellationToken.None);
+        Assert.AreEqual(502, r.Status);
+        Assert.AreEqual(ErrorCodes.Truncated, Error(r).Code);
+    }
+
+    [TestMethod]
+    public async Task Upstream_failure_is_503_and_does_not_log_inner_messages()
+    {
+        _reviewer.Result = () => throw new UpstreamException("Claude request failed.", new InvalidOperationException(Secret));
+        var r = await NewHandler().HandleAsync("Bearer x", Body(), CancellationToken.None);
+        Assert.AreEqual(503, r.Status);
+        Assert.IsFalse(_log.Lines.Any(l => l.Contains(Secret)), string.Join("\n", _log.Lines));
+    }
+
+    [TestMethod]
+    public async Task Malformed_claude_output_is_502()
+    {
+        _reviewer.Result = () => ReviewResult.Ok("""{"findings":"nope"}""");
+        Assert.AreEqual(ErrorCodes.BadUpstreamResponse, Error(await NewHandler().HandleAsync("Bearer x", Body(), CancellationToken.None)).Code);
+    }
+
+    [TestMethod]
+    public void Options_validation_reports_missing_settings()
+    {
+        var ex = Assert.ThrowsException<InvalidOperationException>(() => new GatewayOptions().Validate());
+        StringAssert.Contains(ex.Message, "TenantId");
+        StringAssert.Contains(ex.Message, "Audience");
+        StringAssert.Contains(ex.Message, "FoundryResource");
+    }
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `dotnet test LLDOCX.Gateway.Tests`
+Expected: the build FAILS with `The type or namespace name 'DeepCheckHandler' could not be found`.
+
+- [ ] **Step 4: Write `LLDOCX/LLDOCX.Gateway/GatewayOptions.cs`**
+
+```csharp
+namespace LLDOCX.Gateway;
+
+/// <summary>Gateway settings, bound from the "Gateway" configuration section (app settings named Gateway__Name).</summary>
+public sealed class GatewayOptions
+{
+    public string TenantId { get; set; }
+
+    /// <summary>Comma-separated accepted audiences: the gateway's App ID URI and/or client ID.</summary>
+    public string Audience { get; set; }
+
+    public string RequiredScope { get; set; } = "DeepCheck.Use";
+
+    /// <summary>Optional app role the caller must hold (for example "DeepCheck.User").</summary>
+    public string RequiredRole { get; set; }
+
+    /// <summary>"Foundry" (managed identity, no key) or "Anthropic" (API key from Key Vault).</summary>
+    public string ClaudeProvider { get; set; } = "Foundry";
+
+    public string FoundryResource { get; set; }
+    public string AnthropicApiKey { get; set; }
+
+    /// <summary>Model ID, or the Foundry deployment name.</summary>
+    public string Model { get; set; } = "claude-opus-5-5";
+
+    public string Effort { get; set; } = "high";
+    public int MaxOutputTokens { get; set; } = 16000;
+    public int MaxInputChars { get; set; } = 200000;
+    public int RequestsPerUserPerHour { get; set; } = 30;
+
+    /// <summary>Kept under Azure's 230-second HTTP response limit.</summary>
+    public int ClaudeTimeoutSeconds { get; set; } = 210;
+
+    public IReadOnlyList<string> Audiences =>
+        (Audience ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    public void Validate()
+    {
+        var errors = new List<string>();
+        if (!Guid.TryParse(TenantId, out _)) errors.Add("Gateway:TenantId must be the lozaip.com tenant GUID.");
+        if (Audiences.Count == 0) errors.Add("Gateway:Audience is required.");
+        switch (ClaudeProvider)
+        {
+            case "Foundry":
+                if (string.IsNullOrWhiteSpace(FoundryResource)) errors.Add("Gateway:FoundryResource is required for the Foundry provider.");
+                break;
+            case "Anthropic":
+                if (string.IsNullOrWhiteSpace(AnthropicApiKey)) errors.Add("Gateway:AnthropicApiKey is required for the Anthropic provider.");
+                break;
+            default:
+                errors.Add("Gateway:ClaudeProvider must be Foundry or Anthropic.");
+                break;
+        }
+        if (errors.Count > 0) throw new InvalidOperationException(string.Join(" ", errors));
+    }
+}
+```
+
+- [ ] **Step 5: Write `LLDOCX/LLDOCX.Gateway/DeepCheckPrompt.cs`**
+
+```csharp
+using System.Text;
+using LLDOCX.DeepCheck;
+
+namespace LLDOCX.Gateway;
+
+public static class DeepCheckPrompt
+{
+    public const string SystemPrompt =
+        "You review the claims of a US patent application for three kinds of problems only:\n" +
+        "1. Antecedent basis: every element referred to with 'the' or 'said' must be introduced earlier in the same claim " +
+        "or in a claim it depends on (for a multiple dependent claim, in every claim it refers to); references must not be ambiguous.\n" +
+        "2. Claim dependency: references to missing, later, or canceled claims; multiple dependent claims that refer to claims " +
+        "cumulatively or depend on another multiple dependent claim (37 CFR 1.75(c)); dependent claims whose category or preamble " +
+        "does not match the claim they depend on.\n" +
+        "3. Terminology: typos and inconsistent names for the same element.\n\n" +
+        "An automated rule checker has already reviewed the claims. Its findings are listed with indexes in <rule_findings>. " +
+        "Put in `findings` only problems the rule checker missed. Put in `disputes` the index of each rule finding that is a " +
+        "false positive, with a one-sentence reason. For every finding, `quote` must be an exact substring of that claim's text, " +
+        "as short as possible while unique within the claim. `suggestion` is a concrete fix, or an empty string. " +
+        "Do not comment on patentability, claim scope, or style. If there is nothing to report, return empty arrays.";
+
+    public const string ResponseSchemaJson = """
+        {
+          "type": "object",
+          "properties": {
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "claim": { "type": "integer" },
+                  "type": { "type": "string", "enum": ["Antecedent", "Dependency", "Terminology", "Formatting"] },
+                  "severity": { "type": "string", "enum": ["Error", "Warning", "Info"] },
+                  "quote": { "type": "string" },
+                  "message": { "type": "string" },
+                  "suggestion": { "type": "string" }
+                },
+                "required": ["claim", "type", "severity", "quote", "message", "suggestion"],
+                "additionalProperties": false
+              }
+            },
+            "disputes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "index": { "type": "integer" },
+                  "reason": { "type": "string" }
+                },
+                "required": ["index", "reason"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["findings", "disputes"],
+          "additionalProperties": false
+        }
+        """;
+
+    public static string BuildUserMessage(DeepCheckRequest request)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<claims>");
+        foreach (var c in request.Claims)
+            sb.AppendLine(c.Canceled ? $"{c.Number}. (Canceled)" : $"{c.Number}. {c.Text}");
+        sb.AppendLine("</claims>");
+        sb.AppendLine("<rule_findings>");
+        for (int i = 0; i < request.RuleFindings.Count; i++)
+        {
+            var f = request.RuleFindings[i];
+            sb.AppendLine($"[{i}] claim {f.Claim}, {f.Type}, {f.Severity}: {f.Message}");
+        }
+        sb.AppendLine("</rule_findings>");
+        return sb.ToString();
+    }
+}
+```
+
+- [ ] **Step 6: Write `LLDOCX/LLDOCX.Gateway/TokenValidator.cs`**
+
+```csharp
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Protocols;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.IdentityModel.Tokens;
+
+namespace LLDOCX.Gateway;
+
+public sealed class CallerIdentity
+{
+    public CallerIdentity(string objectId, string username)
+    {
+        ObjectId = objectId;
+        Username = username;
+    }
+
+    public string ObjectId { get; }
+    public string Username { get; }
+}
+
+public enum AuthFailureKind { Unauthenticated, Forbidden }
+
+public sealed class AuthFailure : Exception
+{
+    public AuthFailure(AuthFailureKind kind, string message) : base(message) => Kind = kind;
+    public AuthFailureKind Kind { get; }
+}
+
+public interface ITokenValidator
+{
+    /// <summary>Returns the caller, or throws AuthFailure.</summary>
+    Task<CallerIdentity> ValidateAsync(string authorizationHeader, CancellationToken ct);
+}
+
+/// <summary>Accepts only Entra access tokens issued by the lozaip.com tenant for this gateway, with the DeepCheck.Use scope.</summary>
+public sealed class EntraTokenValidator : ITokenValidator
+{
+    readonly GatewayOptions _options;
+    readonly IConfigurationManager<OpenIdConnectConfiguration> _config;
+    readonly JsonWebTokenHandler _handler = new();
+
+    public EntraTokenValidator(GatewayOptions options, IConfigurationManager<OpenIdConnectConfiguration> config)
+    {
+        _options = options;
+        _config = config;
+    }
+
+    public static IConfigurationManager<OpenIdConnectConfiguration> CreateConfigurationManager(string tenantId) =>
+        new ConfigurationManager<OpenIdConnectConfiguration>(
+            $"https://login.microsoftonline.com/{tenantId}/v2.0/.well-known/openid-configuration",
+            new OpenIdConnectConfigurationRetriever(),
+            new HttpDocumentRetriever());
+
+    public async Task<CallerIdentity> ValidateAsync(string authorizationHeader, CancellationToken ct)
+    {
+        const string prefix = "Bearer ";
+        if (string.IsNullOrEmpty(authorizationHeader) || !authorizationHeader.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            throw new AuthFailure(AuthFailureKind.Unauthenticated, "Missing bearer token.");
+        string token = authorizationHeader.Substring(prefix.Length).Trim();
+
+        var config = await _config.GetConfigurationAsync(ct);
+        var parameters = new TokenValidationParameters
+        {
+            ValidIssuers = new[]
+            {
+                $"https://login.microsoftonline.com/{_options.TenantId}/v2.0",
+                $"https://sts.windows.net/{_options.TenantId}/"
+            },
+            ValidAudiences = _options.Audiences,
+            IssuerSigningKeys = config.SigningKeys,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(2)
+        };
+        TokenValidationResult result = await _handler.ValidateTokenAsync(token, parameters);
+        if (!result.IsValid) throw new AuthFailure(AuthFailureKind.Unauthenticated, "Invalid token.");
+
+        var identity = result.ClaimsIdentity;
+        if (!string.Equals(identity.FindFirst("tid")?.Value, _options.TenantId, StringComparison.OrdinalIgnoreCase))
+            throw new AuthFailure(AuthFailureKind.Unauthenticated, "Token is not from the lozaip.com tenant.");
+
+        var scopes = (identity.FindFirst("scp")?.Value ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (!scopes.Contains(_options.RequiredScope, StringComparer.Ordinal))
+            throw new AuthFailure(AuthFailureKind.Forbidden, "Missing scope " + _options.RequiredScope + ".");
+
+        if (!string.IsNullOrWhiteSpace(_options.RequiredRole) && !identity.FindAll("roles").Any(c => c.Value == _options.RequiredRole))
+            throw new AuthFailure(AuthFailureKind.Forbidden, "Missing role " + _options.RequiredRole + ".");
+
+        string oid = identity.FindFirst("oid")?.Value;
+        if (string.IsNullOrEmpty(oid)) throw new AuthFailure(AuthFailureKind.Unauthenticated, "Token has no oid.");
+        string username = identity.FindFirst("preferred_username")?.Value ?? identity.FindFirst("upn")?.Value ?? oid;
+        return new CallerIdentity(oid, username);
+    }
+}
+```
+
+- [ ] **Step 7: Write `LLDOCX/LLDOCX.Gateway/UserRateLimiter.cs`**
+
+```csharp
+namespace LLDOCX.Gateway;
+
+/// <summary>Sliding one-hour window per user, held in memory per instance (acceptable at lozaip.com's scale).</summary>
+public sealed class UserRateLimiter
+{
+    static readonly TimeSpan Window = TimeSpan.FromHours(1);
+    readonly int _perHour;
+    readonly Func<DateTime> _utcNow;
+    readonly Dictionary<string, Queue<DateTime>> _hits = new();
+    readonly object _gate = new();
+
+    public UserRateLimiter(int perHour, Func<DateTime> utcNow)
+    {
+        _perHour = Math.Max(1, perHour);
+        _utcNow = utcNow;
+    }
+
+    public bool TryAcquire(string userId, out TimeSpan retryAfter)
+    {
+        lock (_gate)
+        {
+            DateTime now = _utcNow();
+            if (!_hits.TryGetValue(userId, out var queue)) _hits[userId] = queue = new Queue<DateTime>();
+            while (queue.Count > 0 && queue.Peek() <= now - Window) queue.Dequeue();
+            if (queue.Count >= _perHour)
+            {
+                retryAfter = queue.Peek() + Window - now;
+                return false;
+            }
+            queue.Enqueue(now);
+            retryAfter = TimeSpan.Zero;
+            return true;
+        }
+    }
+}
+```
+
+- [ ] **Step 8: Write `LLDOCX/LLDOCX.Gateway/ClaudeReviewer.cs`**
+
+```csharp
+using System.Text;
+using System.Text.Json;
+using Anthropic;
+using Anthropic.Exceptions;
+using Anthropic.Foundry;
+using Anthropic.Models.Messages;
+using Azure.Identity;
+
+namespace LLDOCX.Gateway;
+
+public enum ReviewOutcome { Ok, Refused, Truncated }
+
+public sealed class ReviewResult
+{
+    ReviewResult(ReviewOutcome outcome, string json)
+    {
+        Outcome = outcome;
+        Json = json;
+    }
+
+    public ReviewOutcome Outcome { get; }
+    public string Json { get; }
+
+    public static ReviewResult Ok(string json) => new(ReviewOutcome.Ok, json);
+    public static ReviewResult Refused() => new(ReviewOutcome.Refused, null);
+    public static ReviewResult Truncated() => new(ReviewOutcome.Truncated, null);
+}
+
+/// <summary>Claude could not be reached or returned an error. Message never contains claim text.</summary>
+public sealed class UpstreamException : Exception
+{
+    public UpstreamException(string message, Exception inner) : base(message, inner) { }
+}
+
+public interface IClaudeReviewer
+{
+    Task<ReviewResult> ReviewAsync(string systemPrompt, string userMessage, string responseSchemaJson, CancellationToken ct);
+}
+
+public sealed class SdkClaudeReviewer : IClaudeReviewer
+{
+    readonly Func<MessageCreateParams, CancellationToken, Task<Message>> _create;
+    readonly string _model;
+    readonly string _effort;
+    readonly int _maxTokens;
+
+    public SdkClaudeReviewer(Func<MessageCreateParams, CancellationToken, Task<Message>> create, string model, string effort, int maxTokens)
+    {
+        _create = create;
+        _model = model;
+        _effort = effort;
+        _maxTokens = maxTokens;
+    }
+
+    public static SdkClaudeReviewer Create(GatewayOptions o)
+    {
+        if (o.ClaudeProvider == "Anthropic")
+        {
+            var client = new AnthropicClient { ApiKey = o.AnthropicApiKey };
+            return new SdkClaudeReviewer((p, ct) => client.Messages.Create(p, cancellationToken: ct), o.Model, o.Effort, o.MaxOutputTokens);
+        }
+
+        // Managed identity when running in Azure; developer credentials (az login) when running locally.
+        var foundry = new AnthropicFoundryClient(new AnthropicFoundryIdentityTokenCredentials(new DefaultAzureCredential(), o.FoundryResource));
+        return new SdkClaudeReviewer((p, ct) => foundry.Messages.Create(p, cancellationToken: ct), o.Model, o.Effort, o.MaxOutputTokens);
+    }
+
+    public async Task<ReviewResult> ReviewAsync(string systemPrompt, string userMessage, string responseSchemaJson, CancellationToken ct)
+    {
+        var schema = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(responseSchemaJson);
+        var parameters = new MessageCreateParams
+        {
+            Model = _model,
+            MaxTokens = _maxTokens,
+            System = systemPrompt,
+            OutputConfig = new OutputConfig
+            {
+                Effort = ParseEffort(_effort),
+                Format = new JsonOutputFormat { Schema = schema },
+            },
+            Messages = [new UserMessageParam { Content = userMessage }],
+        };
+
+        Message response;
+        try
+        {
+            response = await _create(parameters, ct);
+        }
+        catch (AnthropicException ex)
+        {
+            throw new UpstreamException("Claude request failed (" + ex.GetType().Name + ").", ex);
+        }
+
+        if (response.StopReason == "refusal") return ReviewResult.Refused();
+        if (response.StopReason == "max_tokens") return ReviewResult.Truncated();
+
+        var text = new StringBuilder();
+        foreach (var block in response.Content)
+            if (block.TryPickText(out var t)) text.Append(t.Text);
+        return ReviewResult.Ok(text.ToString());
+    }
+
+    static Effort ParseEffort(string value) => (value ?? "").Trim().ToLowerInvariant() switch
+    {
+        "low" => Effort.Low,
+        "medium" => Effort.Medium,
+        "max" => Effort.Max,
+        _ => Effort.High,
+    };
+}
+```
+
+- [ ] **Step 9: Write `LLDOCX/LLDOCX.Gateway/DeepCheckHandler.cs`**
+
+```csharp
+using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json;
+using LLDOCX.DeepCheck;
+using Microsoft.Extensions.Logging;
+
+namespace LLDOCX.Gateway;
+
+public sealed class HandlerResult
+{
+    public HandlerResult(int status, string body, int? retryAfterSeconds = null)
+    {
+        Status = status;
+        Body = body;
+        RetryAfterSeconds = retryAfterSeconds;
+    }
+
+    public int Status { get; }
+    public string Body { get; }
+    public int? RetryAfterSeconds { get; }
+
+    public static HandlerResult Error(int status, string code, string message, int? retryAfterSeconds = null) =>
+        new(status, JsonSerializer.Serialize(new ErrorBody { Error = new ErrorDetail { Code = code, Message = message } }), retryAfterSeconds);
+}
+
+/// <summary>Everything the HTTP function does, without the HTTP plumbing, so it can be tested.</summary>
+public sealed class DeepCheckHandler
+{
+    readonly GatewayOptions _options;
+    readonly ITokenValidator _validator;
+    readonly UserRateLimiter _limiter;
+    readonly IClaudeReviewer _reviewer;
+    readonly ILogger<DeepCheckHandler> _log;
+
+    public DeepCheckHandler(GatewayOptions options, ITokenValidator validator, UserRateLimiter limiter,
+        IClaudeReviewer reviewer, ILogger<DeepCheckHandler> log)
+    {
+        _options = options;
+        _validator = validator;
+        _limiter = limiter;
+        _reviewer = reviewer;
+        _log = log;
+    }
+
+    public async Task<HandlerResult> HandleAsync(string authorizationHeader, string body, CancellationToken ct)
+    {
+        var started = Stopwatch.StartNew();
+
+        CallerIdentity caller;
+        try
+        {
+            caller = await _validator.ValidateAsync(authorizationHeader, ct);
+        }
+        catch (AuthFailure ex)
+        {
+            _log.LogWarning("Deep Check rejected: {Kind} ({Reason})", ex.Kind, ex.Message);
+            return ex.Kind == AuthFailureKind.Forbidden
+                ? HandlerResult.Error(403, ErrorCodes.Forbidden, "Your account isn't authorized for Deep Check.")
+                : HandlerResult.Error(401, ErrorCodes.Unauthorized, "Sign-in required.");
+        }
+
+        DeepCheckRequest request;
+        try
+        {
+            request = JsonSerializer.Deserialize<DeepCheckRequest>(body ?? "");
+        }
+        catch (JsonException)
+        {
+            request = null;
+        }
+        if (request?.Claims == null || request.Claims.Count == 0)
+            return Done(caller, started, 0, 0, "invalid_request",
+                HandlerResult.Error(400, ErrorCodes.InvalidRequest, "The request contained no claims."));
+        request.RuleFindings ??= new List<RuleFindingDto>();
+
+        int count = request.Claims.Count;
+        int chars = DeepCheckRequestBuilder.TextLength(request);
+        if (chars > _options.MaxInputChars)
+            return Done(caller, started, count, chars, "too_large", HandlerResult.Error(400, ErrorCodes.TooLarge,
+                string.Format(CultureInfo.InvariantCulture, "The claims are too long for Deep Check (limit {0:N0} characters).", _options.MaxInputChars)));
+
+        if (!_limiter.TryAcquire(caller.ObjectId, out TimeSpan retryAfter))
+            return Done(caller, started, count, chars, "rate_limited", HandlerResult.Error(429, ErrorCodes.RateLimited,
+                "Deep Check limit reached.", Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds))));
+
+        ReviewResult review;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(_options.ClaudeTimeoutSeconds));
+        try
+        {
+            review = await _reviewer.ReviewAsync(DeepCheckPrompt.SystemPrompt, DeepCheckPrompt.BuildUserMessage(request),
+                DeepCheckPrompt.ResponseSchemaJson, timeout.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Done(caller, started, count, chars, "timeout", HandlerResult.Error(504, ErrorCodes.Timeout,
+                "Claude took too long to review these claims. Try checking a selection of claims."));
+        }
+        catch (UpstreamException ex)
+        {
+            // Log only exception types: inner messages could echo request content.
+            _log.LogError("Deep Check upstream failure: {Error} / {Inner}", ex.Message, ex.InnerException?.GetType().Name);
+            return Done(caller, started, count, chars, "upstream_unavailable", HandlerResult.Error(503, ErrorCodes.UpstreamUnavailable,
+                "The Claude service is unavailable. Try again shortly."));
+        }
+
+        if (review.Outcome == ReviewOutcome.Refused)
+            return Done(caller, started, count, chars, "refused",
+                HandlerResult.Error(422, ErrorCodes.Refused, "Claude declined to review these claims."));
+        if (review.Outcome == ReviewOutcome.Truncated)
+            return Done(caller, started, count, chars, "truncated", HandlerResult.Error(502, ErrorCodes.Truncated,
+                "Claude's review was cut off because the claim set is very large. Try checking a selection of claims."));
+        if (!DeepCheckResponseParser.IsWellFormed(review.Json))
+            return Done(caller, started, count, chars, "bad_upstream_response", HandlerResult.Error(502, ErrorCodes.BadUpstreamResponse,
+                "Claude returned a response that could not be read."));
+
+        return Done(caller, started, count, chars, "ok", new HandlerResult(200, review.Json));
+    }
+
+    HandlerResult Done(CallerIdentity caller, Stopwatch started, int claims, int chars, string outcome, HandlerResult result)
+    {
+        // Metadata only. Claim text and model output are confidential and are never logged.
+        _log.LogInformation("Deep Check {Outcome} for {User} ({ObjectId}): {Claims} claims, {Chars} chars, {ElapsedMs} ms",
+            outcome, caller.Username, caller.ObjectId, claims, chars, started.ElapsedMilliseconds);
+        return result;
+    }
+}
+```
+
+- [ ] **Step 10: Write `LLDOCX/LLDOCX.Gateway/DeepCheckFunction.cs` and `LLDOCX/LLDOCX.Gateway/Program.cs`**
+
+`DeepCheckFunction.cs`:
+
+```csharp
+using System.Net;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Azure.Functions.Worker.Http;
+
+namespace LLDOCX.Gateway;
+
+public sealed class DeepCheckFunction
+{
+    readonly DeepCheckHandler _handler;
+
+    public DeepCheckFunction(DeepCheckHandler handler) => _handler = handler;
+
+    // Anonymous at the Functions layer: DeepCheckHandler validates the caller's Entra token itself.
+    [Function("deepcheck")]
+    public async Task<HttpResponseData> Run(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "deepcheck")] HttpRequestData req,
+        CancellationToken ct)
+    {
+        string auth = req.Headers.TryGetValues("Authorization", out var values) ? values.FirstOrDefault() : null;
+        string body;
+        using (var reader = new StreamReader(req.Body))
+            body = await reader.ReadToEndAsync(ct);
+
+        HandlerResult result = await _handler.HandleAsync(auth, body, ct);
+        var response = req.CreateResponse((HttpStatusCode)result.Status);
+        response.Headers.Add("Content-Type", "application/json; charset=utf-8");
+        if (result.RetryAfterSeconds.HasValue) response.Headers.Add("Retry-After", result.RetryAfterSeconds.Value.ToString());
+        await response.WriteStringAsync(result.Body, ct);
+        return response;
+    }
+}
+```
+
+`Program.cs`:
+
+```csharp
+using LLDOCX.Gateway;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+var host = new HostBuilder()
+    .ConfigureFunctionsWorkerDefaults()
+    .ConfigureServices((context, services) =>
+    {
+        services.AddApplicationInsightsTelemetryWorkerService();
+        services.ConfigureFunctionsApplicationInsights();
+
+        var options = new GatewayOptions();
+        context.Configuration.GetSection("Gateway").Bind(options);
+        options.Validate();
+
+        services.AddSingleton(options);
+        services.AddSingleton<ITokenValidator>(new EntraTokenValidator(options, EntraTokenValidator.CreateConfigurationManager(options.TenantId)));
+        services.AddSingleton(new UserRateLimiter(options.RequestsPerUserPerHour, () => DateTime.UtcNow));
+        services.AddSingleton<IClaudeReviewer>(SdkClaudeReviewer.Create(options));
+        services.AddSingleton<DeepCheckHandler>();
+    })
+    .Build();
+
+host.Run();
+```
+
+- [ ] **Step 11: Build and fix SDK binding names**
+
+Run: `dotnet build LLDOCX.Gateway`
+Expected: `Build succeeded.`
+
+These names come from the SDK documentation: `AnthropicFoundryClient`, `AnthropicFoundryIdentityTokenCredentials`, `MessageCreateParams`, `OutputConfig.Effort`, `Effort.High`, `UserMessageParam`, `TryPickText`, `StopReason == "refusal"`, and the `AnthropicException` hierarchy. If the compiler reports an unknown name, look it up in the package XML docs, for example `grep -n "OutputFormat" %USERPROFILE%\.nuget\packages\anthropic\<version>\lib\netstandard2.0\Anthropic.xml`. Likely adjustments:
+- **`JsonOutputFormat`** (the non-beta structured-output format class). The beta name is `BetaJsonOutputFormat`.
+- **The `cancellationToken:` parameter name** on `Messages.Create`.
+- **`StopReason`:** if it is an `ApiEnum`, compare its raw string value.
+- **`ILogger.BeginScope` constraint** in `CapturingLogger`: if the compiler warns about the `where TState : notnull` constraint, remove it.
+
+Re-run until `Build succeeded.`
+
+- [ ] **Step 12: Run the tests to verify they pass**
+
+Run: `dotnet test LLDOCX.Gateway.Tests`
+Expected: `Passed!` with 0 failed.
+
+Then run all non-VSTO tests:
+
+```bash
+dotnet test LLDOCX.Claims.Tests && dotnet test LLDOCX.Auth.Tests && dotnet test LLDOCX.Gateway.Tests
+```
+
+Expected: all three pass.
+
+- [ ] **Step 13: Commit**
+
+```bash
+git add LLDOCX/LLDOCX.sln LLDOCX/LLDOCX.Gateway LLDOCX/LLDOCX.Gateway.Tests
+git commit -m "feat(gateway): add Deep Check Azure Function with Entra auth and Foundry client
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 11: Add-in claims settings
+
+**Files:**
+- Modify: `LLDOCX/LLDOCX/LLDOCX.csproj` (project references)
+- Modify: `LLDOCX/LLDOCX/Options/SettingOption.cs`
+- Modify: `LLDOCX/LLDOCX/CustomUserControl/SettingUserControl.cs:107` (`SaveAllSettng`)
+
+**Interfaces:**
+- Consumes: `Severity`, `ClaimsCheckOptions.DefaultAllowlist` (Task 8)
+- Produces:
+  - `SettingOption` properties: `bool ClaimsCheckAntecedent`, `bool ClaimsCheckDependency`, `bool ClaimsCheckTerminology`, `Severity ClaimsMinSeverity`, `List<string> ClaimsAllowlist`;
+  - methods `void CopyClaimsSettingsFrom(SettingOption other)` and `ClaimsCheckOptions ToClaimsCheckOptions()`.
+  - There is no model setting and no API key on the client.
+
+- [ ] **Step 1: Add project references to `LLDOCX/LLDOCX/LLDOCX.csproj`**
+
+In the `ItemGroup` that holds `<ProjectReference Include="..\LLDOCX.Auth\LLDOCX.Auth.csproj" />` (added by the gate plan), add:
+
+```xml
+    <ProjectReference Include="..\LLDOCX.Claims\LLDOCX.Claims.csproj" />
+    <ProjectReference Include="..\LLDOCX.DeepCheck\LLDOCX.DeepCheck.csproj" />
 ```
 
 - [ ] **Step 2: Replace `LLDOCX/LLDOCX/Options/SettingOption.cs`**
@@ -2543,7 +3804,6 @@ using System.Runtime.Serialization;
 using System.Text;
 using System.Threading.Tasks;
 using LLDOCX.Claims;
-using LLDOCX.DeepCheck;
 
 namespace LLDOCX.Options
 {
@@ -2574,8 +3834,6 @@ namespace LLDOCX.Options
         public Severity ClaimsMinSeverity { get; set; } = Severity.Info;
         [field: OptionalField(VersionAdded = 2)]
         public List<string> ClaimsAllowlist { get; set; } = new List<string>(ClaimsCheckOptions.DefaultAllowlist);
-        [field: OptionalField(VersionAdded = 2)]
-        public string DeepCheckModel { get; set; } = DeepCheckClient.DefaultModel;
 
         // Property initializers do not run during BinaryFormatter deserialization; set defaults
         // here so fields missing from an older settings file get them.
@@ -2587,7 +3845,6 @@ namespace LLDOCX.Options
             ClaimsCheckTerminology = true;
             ClaimsMinSeverity = Severity.Info;
             ClaimsAllowlist = new List<string>(ClaimsCheckOptions.DefaultAllowlist);
-            DeepCheckModel = DeepCheckClient.DefaultModel;
         }
 
         public void CopyClaimsSettingsFrom(SettingOption other)
@@ -2597,7 +3854,6 @@ namespace LLDOCX.Options
             ClaimsCheckTerminology = other.ClaimsCheckTerminology;
             ClaimsMinSeverity = other.ClaimsMinSeverity;
             ClaimsAllowlist = new List<string>(other.ClaimsAllowlist ?? new List<string>(ClaimsCheckOptions.DefaultAllowlist));
-            DeepCheckModel = other.DeepCheckModel;
         }
 
         public ClaimsCheckOptions ToClaimsCheckOptions()
@@ -2635,98 +3891,47 @@ to:
             _option.CheckPageSize = ckbPageSize.Checked;
 ```
 
-- [ ] **Step 4: Create `LLDOCX/LLDOCX/Options/ApiKeyStore.cs`**
+- [ ] **Step 4: Verify in Visual Studio (manual)**
 
-```csharp
-using System;
-using System.IO;
-using System.Security.Cryptography;
-using System.Text;
+1. Rebuild the solution. Expected: the build succeeds, and the add-in's `bin\Debug` contains `LLDOCX.Claims.dll`, `LLDOCX.DeepCheck.dll`, `System.Text.Json.dll` and `LLDOCX.dll.config`. There is no `Anthropic.dll`.
+2. Press F5 and sign in.
+3. Click **Settings**, toggle any checkbox and click Save. Expected: "Saved Setting successful" appears with no exception, which confirms an existing settings file in `%APPDATA%\LL-Docx\LLDocx.dll` still loads with the new fields.
 
-namespace LLDOCX.Options
-{
-    /// <summary>Stores the Claude API key encrypted with DPAPI for the current Windows user.</summary>
-    static class ApiKeyStore
-    {
-        static readonly byte[] Entropy = Encoding.UTF8.GetBytes("LL-Docx Claude API key v1");
-
-        static string KeyFile
-        {
-            get
-            {
-                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LL-Docx");
-                if (!Directory.Exists(folder)) Directory.CreateDirectory(folder);
-                return Path.Combine(folder, "claude.key");
-            }
-        }
-
-        public static string Load()
-        {
-            string file = KeyFile;
-            if (!File.Exists(file)) return null;
-            try
-            {
-                byte[] data = ProtectedData.Unprotect(File.ReadAllBytes(file), Entropy, DataProtectionScope.CurrentUser);
-                string key = Encoding.UTF8.GetString(data);
-                return string.IsNullOrWhiteSpace(key) ? null : key;
-            }
-            catch (CryptographicException)
-            {
-                return null;
-            }
-        }
-
-        public static void Save(string key)
-        {
-            byte[] data = ProtectedData.Protect(Encoding.UTF8.GetBytes(key.Trim()), Entropy, DataProtectionScope.CurrentUser);
-            File.WriteAllBytes(KeyFile, data);
-        }
-
-        public static void Clear()
-        {
-            string file = KeyFile;
-            if (File.Exists(file)) File.Delete(file);
-        }
-    }
-}
-```
-
-- [ ] **Step 5: Verify in Visual Studio (manual)**
-
-Rebuild the solution. Expected: build succeeds, and `bin\Debug` of the add-in contains `LLDOCX.Claims.dll`, `LLDOCX.DeepCheck.dll`, `Anthropic.dll`, and `LLDOCX.dll.config`. Press F5. In Word, click **Settings**, toggle any checkbox, and click Save: the message "Saved Setting successful" appears with no exception. This confirms that an existing settings file in `%APPDATA%\LL-Docx\LLDocx.dll` still loads with the new fields.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add LLDOCX/LLDOCX/LLDOCX.csproj LLDOCX/LLDOCX/Options LLDOCX/LLDOCX/CustomUserControl/SettingUserControl.cs
-git commit -m "feat(lldocx): add claims settings and DPAPI API key storage
+git commit -m "feat(lldocx): add claims check settings
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 11: Word integration (extractor, controller, pane, dialogs, ribbon)
+### Task 12: Word integration (extractor, controller, pane, dialog, ribbon)
 
 **Files:**
 - Create: `LLDOCX/LLDOCX/Helpers/ClaimsExtractor.cs`
 - Create: `LLDOCX/LLDOCX/Helpers/ClaimsController.cs`
 - Create: `LLDOCX/LLDOCX/CustomUserControl/ClaimsPaneControl.cs`
 - Create: `LLDOCX/LLDOCX/CustomUserControl/ClaimsSettingsPanel.cs`
-- Create: `LLDOCX/LLDOCX/CustomUserControl/ApiKeyDialog.cs`
 - Create: `LLDOCX/LLDOCX/CustomUserControl/DeepCheckConfirmDialog.cs`
 - Modify: `LLDOCX/LLDOCX/ThisAddIn.cs`
 - Modify: `LLDOCX/LLDOCX/RibbonExplorer.xml`
-- Modify: `LLDOCX/LLDOCX/RibbonExplorer.cs:41-47` (`GetImages`) and add callbacks
+- Modify: `LLDOCX/LLDOCX/RibbonExplorer.cs`
 - Modify: `LLDOCX/LLDOCX/LLDOCX.csproj` (Compile items)
 
 **Interfaces:**
-- Consumes: `ClaimsAnalyzer.Analyze`, `AnalysisResult`, `Finding`, `Severity`, `RawParagraph` (Task 8); `DeepCheckClient.RunAsync`, `DeepCheckException` (Task 9); `SettingOption.ToClaimsCheckOptions`, `ApiKeyStore`, `ProcessData` (Task 10)
+- Consumes:
+  - `ClaimsAnalyzer.Analyze`, `AnalysisResult`, `Finding`, `Severity`, `RawParagraph` (Task 8);
+  - `DeepCheckHttpClient`, `DeepCheckException` (Task 9);
+  - `SettingOption.ToClaimsCheckOptions`, `ProcessData` (Task 11);
+  - from the gate plan: `ThisAddIn.Gate`, `ThisAddIn.GateConfig`, `ThisAddIn.EnsureUnlockedAsync()`, `ThisAddIn.HideAllPanes()`, `AuthGate.GetGatewayTokenAsync`, `SignInRequiredException`, `GateStatus`, and `RibbonExplorer.GetEnabled`.
 - Produces:
-  - `ClaimsExtractor.Extract(Word.Document doc, out bool fromSelection) : List<RawParagraph>` (returns null when no claims section is found)
-  - `ClaimsController`: `Task RunCheckAsync()`, `Task RunDeepCheckAsync()`, `AnalysisResult LastResult`, `string LastDocumentName`
-  - `ThisAddIn.ClaimsController` and `ThisAddIn.ShowClaimsPane() : ClaimsPaneControl`
-  - `ClaimsPaneControl`: `ShowResult(AnalysisResult, bool fromSelection)`, `ShowStatus(string)`, `ShowBusy(string, Action cancel)`, `HideBusy()`, `SelectSettingsTab()`
+  - `ClaimsExtractor.Extract(Word.Document doc, out bool fromSelection) : List<RawParagraph>`, which returns null when no claims section is found;
+  - `ClaimsController`: `Task RunCheckAsync()`, `Task RunDeepCheckAsync()`, `AnalysisResult LastResult`, `string LastDocumentName`;
+  - `ThisAddIn.ClaimsController` and `ThisAddIn.ShowClaimsPane() : ClaimsPaneControl`;
+  - `ClaimsPaneControl`: `ShowResult(AnalysisResult, bool fromSelection)`, `ShowStatus(string)`, `ShowBusy(string, Action cancel)`, `HideBusy()`.
 
 - [ ] **Step 1: Add the Compile items to `LLDOCX/LLDOCX/LLDOCX.csproj`**
 
@@ -2740,9 +3945,6 @@ In the `ItemGroup` with the other `Compile` items, add:
     </Compile>
     <Compile Include="CustomUserControl\ClaimsSettingsPanel.cs">
       <SubType>UserControl</SubType>
-    </Compile>
-    <Compile Include="CustomUserControl\ApiKeyDialog.cs">
-      <SubType>Form</SubType>
     </Compile>
     <Compile Include="CustomUserControl\DeepCheckConfirmDialog.cs">
       <SubType>Form</SubType>
@@ -2838,52 +4040,7 @@ namespace LLDOCX.Helpers
 }
 ```
 
-- [ ] **Step 3: Create `LLDOCX/LLDOCX/CustomUserControl/ApiKeyDialog.cs`**
-
-```csharp
-using System;
-using System.Drawing;
-using System.Windows.Forms;
-
-namespace LLDOCX.CustomUserControl
-{
-    class ApiKeyDialog : Form
-    {
-        readonly TextBox _key = new TextBox { UseSystemPasswordChar = true, Width = 360 };
-
-        public ApiKeyDialog()
-        {
-            Text = LLDocxConstant.AppName + " – Claude API key";
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            StartPosition = FormStartPosition.CenterParent;
-            MaximizeBox = false;
-            MinimizeBox = false;
-            AutoSize = true;
-            AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            Padding = new Padding(12);
-
-            var ok = new Button { Text = "Save", DialogResult = DialogResult.OK, Enabled = false };
-            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel };
-            _key.TextChanged += (s, e) => ok.Enabled = _key.Text.Trim().Length > 0;
-
-            var layout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
-            layout.Controls.Add(new Label { Text = "Paste your Claude API key. It is stored encrypted for your Windows account.", AutoSize = true, MaximumSize = new Size(360, 0) });
-            layout.Controls.Add(_key);
-            var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Width = 360 };
-            buttons.Controls.Add(cancel);
-            buttons.Controls.Add(ok);
-            layout.Controls.Add(buttons);
-            Controls.Add(layout);
-            AcceptButton = ok;
-            CancelButton = cancel;
-        }
-
-        public string ApiKey => _key.Text.Trim();
-    }
-}
-```
-
-- [ ] **Step 4: Create `LLDOCX/LLDOCX/CustomUserControl/DeepCheckConfirmDialog.cs`**
+- [ ] **Step 3: Create `LLDOCX/LLDOCX/CustomUserControl/DeepCheckConfirmDialog.cs`**
 
 ```csharp
 using System.Drawing;
@@ -2908,7 +4065,7 @@ namespace LLDOCX.CustomUserControl
 
             string message =
                 $"Deep Check will send the text of {claimCount} claims (about {characterCount:N0} characters) " +
-                "to Anthropic's Claude API for review.\n\n" +
+                "to lozaip.com's Deep Check service, which has them reviewed by Claude.\n\n" +
                 "Only the claims are sent, not the rest of the document. The document is not changed.\n\n" +
                 "Continue?";
             var send = new Button { Text = "Send", DialogResult = DialogResult.OK };
@@ -2931,7 +4088,7 @@ namespace LLDOCX.CustomUserControl
 }
 ```
 
-- [ ] **Step 5: Create `LLDOCX/LLDOCX/CustomUserControl/ClaimsSettingsPanel.cs`**
+- [ ] **Step 4: Create `LLDOCX/LLDOCX/CustomUserControl/ClaimsSettingsPanel.cs`**
 
 ```csharp
 using System;
@@ -2951,18 +4108,12 @@ namespace LLDOCX.CustomUserControl
         readonly CheckBox _terminology = new CheckBox { Text = "Check terminology and typos", AutoSize = true };
         readonly ComboBox _minSeverity = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
         readonly TextBox _allowlist = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Width = ControlWidth, Height = 120 };
-        readonly TextBox _model = new TextBox { Width = ControlWidth };
-        readonly Label _keyStatus = new Label { AutoSize = true };
 
         public ClaimsSettingsPanel()
         {
             _minSeverity.Items.AddRange(new object[] { "Errors", "Errors + Warnings", "All" });
 
-            var setKey = new Button { Text = "Set key…", AutoSize = true };
-            var clearKey = new Button { Text = "Clear key", AutoSize = true };
             var save = new Button { Text = "Save", Width = 110, Height = 34 };
-            setKey.Click += OnSetKey;
-            clearKey.Click += (s, e) => { ApiKeyStore.Clear(); UpdateKeyStatus(); };
             save.Click += OnSave;
 
             var layout = new FlowLayoutPanel
@@ -2980,14 +4131,6 @@ namespace LLDOCX.CustomUserControl
             layout.Controls.Add(_minSeverity);
             layout.Controls.Add(new Label { Text = "Phrases that need no antecedent (one per line):", AutoSize = true, Margin = new Padding(3, 12, 3, 3) });
             layout.Controls.Add(_allowlist);
-            layout.Controls.Add(new Label { Text = "Deep Check model:", AutoSize = true, Margin = new Padding(3, 12, 3, 3) });
-            layout.Controls.Add(_model);
-            layout.Controls.Add(new Label { Text = "Claude API key:", AutoSize = true, Margin = new Padding(3, 12, 3, 3) });
-            layout.Controls.Add(_keyStatus);
-            var keyButtons = new FlowLayoutPanel { AutoSize = true };
-            keyButtons.Controls.Add(setKey);
-            keyButtons.Controls.Add(clearKey);
-            layout.Controls.Add(keyButtons);
             layout.Controls.Add(save);
             Controls.Add(layout);
 
@@ -3002,25 +4145,6 @@ namespace LLDOCX.CustomUserControl
             _terminology.Checked = o.ClaimsCheckTerminology;
             _minSeverity.SelectedIndex = (int)o.ClaimsMinSeverity;
             _allowlist.Text = string.Join(Environment.NewLine, o.ClaimsAllowlist ?? ClaimsCheckOptions.DefaultAllowlist.ToList());
-            _model.Text = o.DeepCheckModel;
-            UpdateKeyStatus();
-        }
-
-        void UpdateKeyStatus()
-        {
-            _keyStatus.Text = ApiKeyStore.Load() != null ? "A key is saved." : "No key saved. Deep Check is unavailable.";
-        }
-
-        void OnSetKey(object sender, EventArgs e)
-        {
-            using (var dlg = new ApiKeyDialog())
-            {
-                if (dlg.ShowDialog(this) == DialogResult.OK)
-                {
-                    ApiKeyStore.Save(dlg.ApiKey);
-                    UpdateKeyStatus();
-                }
-            }
         }
 
         void OnSave(object sender, EventArgs e)
@@ -3031,7 +4155,6 @@ namespace LLDOCX.CustomUserControl
             o.ClaimsCheckTerminology = _terminology.Checked;
             o.ClaimsMinSeverity = (Severity)Math.Max(0, _minSeverity.SelectedIndex);
             o.ClaimsAllowlist = _allowlist.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
-            o.DeepCheckModel = _model.Text.Trim();
             ProcessData.SaveData(o);
             MessageBox.Show("Claims settings saved.", LLDocxConstant.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -3039,7 +4162,7 @@ namespace LLDOCX.CustomUserControl
 }
 ```
 
-- [ ] **Step 6: Create `LLDOCX/LLDOCX/CustomUserControl/ClaimsPaneControl.cs`**
+- [ ] **Step 5: Create `LLDOCX/LLDOCX/CustomUserControl/ClaimsPaneControl.cs`**
 
 ```csharp
 using System;
@@ -3235,17 +4358,19 @@ namespace LLDOCX.CustomUserControl
 }
 ```
 
-- [ ] **Step 7: Create `LLDOCX/LLDOCX/Helpers/ClaimsController.cs`**
+- [ ] **Step 6: Create `LLDOCX/LLDOCX/Helpers/ClaimsController.cs`**
 
 ```csharp
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using LLDOCX.Auth;
 using LLDOCX.Claims;
 using LLDOCX.CustomUserControl;
 using LLDOCX.DeepCheck;
@@ -3256,6 +4381,9 @@ namespace LLDOCX.Helpers
 {
     public class ClaimsController
     {
+        static readonly DeepCheckHttpClient Gateway =
+            new DeepCheckHttpClient(new HttpClient { Timeout = DeepCheckHttpClient.DefaultTimeout });
+
         readonly HashSet<string> _deepCheckApproved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         CancellationTokenSource _deepCheckCts;
 
@@ -3264,6 +4392,7 @@ namespace LLDOCX.Helpers
 
         public async Task RunCheckAsync()
         {
+            if (!await Globals.ThisAddIn.EnsureUnlockedAsync()) return;
             Word.Document doc = ActiveDocument();
             if (doc == null) return;
             var pane = Globals.ThisAddIn.ShowClaimsPane();
@@ -3298,6 +4427,20 @@ namespace LLDOCX.Helpers
         public async Task RunDeepCheckAsync()
         {
             if (_deepCheckCts != null) return; // already running
+            var addIn = Globals.ThisAddIn;
+            if (!await addIn.EnsureUnlockedAsync()) return;
+            if (!addIn.GateConfig.DeepCheckAvailable)
+            {
+                MessageBox.Show("Deep Check is not configured. Contact your administrator.", LLDocxConstant.AppName,
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (addIn.Gate.State.Status != GateStatus.Unlocked)
+            {
+                MessageBox.Show("Deep Check needs an internet connection.", LLDocxConstant.AppName,
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
 
             Word.Document doc = ActiveDocument();
             if (doc == null) return;
@@ -3307,16 +4450,7 @@ namespace LLDOCX.Helpers
                 if (LastResult == null || !string.Equals(LastDocumentName, doc.FullName, StringComparison.OrdinalIgnoreCase)) return;
             }
 
-            var pane = Globals.ThisAddIn.ShowClaimsPane();
-            string apiKey = ApiKeyStore.Load();
-            if (apiKey == null)
-            {
-                MessageBox.Show("No Claude API key is set. Add one on the Settings tab of the Claims Check pane.",
-                    LLDocxConstant.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                pane.SelectSettingsTab();
-                return;
-            }
-
+            var pane = addIn.ShowClaimsPane();
             var result = LastResult;
             if (!_deepCheckApproved.Contains(LastDocumentName))
             {
@@ -3332,14 +4466,14 @@ namespace LLDOCX.Helpers
             result.Findings.RemoveAll(f => f.Source == "AI");
             foreach (var f in result.Findings) { f.DisputedByAI = false; f.DisputeReason = null; }
             var ruleFindings = result.Findings.ToList();
-            string model = ProcessData.GetData().DeepCheckModel;
 
             _deepCheckCts = new CancellationTokenSource();
-            var token = _deepCheckCts.Token;
+            var ct = _deepCheckCts.Token;
             pane.ShowBusy("Deep Check running…", () => _deepCheckCts?.Cancel());
             try
             {
-                var added = await Task.Run(() => DeepCheckClient.RunAsync(apiKey, model, result.Claims, ruleFindings, token));
+                string accessToken = await addIn.Gate.GetGatewayTokenAsync(ct);
+                var added = await Gateway.RunAsync(addIn.GateConfig.GatewayUrl, accessToken, result.Claims, ruleFindings, ct);
                 result.Findings.AddRange(added);
                 pane.ShowResult(result, false);
             }
@@ -3347,6 +4481,18 @@ namespace LLDOCX.Helpers
             {
                 pane.ShowResult(result, false);
                 pane.ShowStatus("Deep Check canceled.");
+            }
+            catch (SignInRequiredException)
+            {
+                pane.ShowResult(result, false);
+                MessageBox.Show("Your sign-in has expired. Click Sign in on the Home tab, then run Deep Check again.",
+                    LLDocxConstant.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (HttpRequestException)
+            {
+                pane.ShowResult(result, false);
+                MessageBox.Show("Could not reach the sign-in service. Check your network connection.",
+                    LLDocxConstant.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             catch (DeepCheckException ex)
             {
@@ -3383,40 +4529,62 @@ namespace LLDOCX.Helpers
 }
 ```
 
-- [ ] **Step 8: Wire the pane and controller into `LLDOCX/LLDOCX/ThisAddIn.cs`**
+- [ ] **Step 7: Wire the pane and controller into `LLDOCX/LLDOCX/ThisAddIn.cs`**
 
-Add `using System.Threading;` and `using System.Windows.Forms;` to the usings. Replace the class body above `#region VSTO generated code` with:
+Make three edits to the file as the gate plan left it:
+
+(a) Replace:
 
 ```csharp
-        private SettingUserControl _settingControl;
-        private Microsoft.Office.Tools.CustomTaskPane myCustomTaskPane;
+        public GateConfig GateConfig { get; private set; }
+        public AuthGate Gate { get; private set; }
+```
+
+with:
+
+```csharp
+        public GateConfig GateConfig { get; private set; }
+        public AuthGate Gate { get; private set; }
+        public ClaimsController ClaimsController { get; private set; }
         private ClaimsPaneControl _claimsControl;
         private Microsoft.Office.Tools.CustomTaskPane _claimsTaskPane;
-        public MissingHeadingHandler MissingHeadingHandler { get; set; }
-        public List<DocumentHeadingData> DocumentHeadingData { get; set; }
-        public ClaimsController ClaimsController { get; private set; }
-        private void ThisAddIn_Startup(object sender, System.EventArgs e)
-        {
-            // Lets async ribbon callbacks resume on the Office UI thread after awaiting background work.
-            if (!(SynchronizationContext.Current is WindowsFormsSynchronizationContext))
-                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
-            MissingHeadingHandler = new MissingHeadingHandler();
+```
+
+(b) In `ThisAddIn_Startup`, replace:
+
+```csharp
+            DocumentHeadingData = new List<DocumentHeadingData>();
+            StartGate();
+```
+
+with:
+
+```csharp
             DocumentHeadingData = new List<DocumentHeadingData>();
             ClaimsController = new ClaimsController();
-        }
-        public void ProcessSideBarPanel(bool isVisible)
+            StartGate();
+```
+
+(c) Replace the whole `HideAllPanes` method:
+
+```csharp
+        public void HideAllPanes()
         {
-            if (_settingControl == null)
-            {
-                _settingControl = new SettingUserControl();
-            }
-            if (myCustomTaskPane == null)
-            {
-                myCustomTaskPane = this.CustomTaskPanes.Add(_settingControl, "LL-DOCX Setting", this.Application.ActiveWindow);
-                myCustomTaskPane.Width = 450;
-            }
-            myCustomTaskPane.Visible = isVisible;
+            if (myCustomTaskPane != null) myCustomTaskPane.Visible = false;
+            _ribbon?.ResetSettingsToggle();
         }
+```
+
+with:
+
+```csharp
+        public void HideAllPanes()
+        {
+            if (myCustomTaskPane != null) myCustomTaskPane.Visible = false;
+            if (_claimsTaskPane != null) _claimsTaskPane.Visible = false;
+            _ribbon?.ResetSettingsToggle();
+        }
+
         public ClaimsPaneControl ShowClaimsPane()
         {
             if (_claimsControl == null)
@@ -3431,48 +4599,57 @@ Add `using System.Threading;` and `using System.Windows.Forms;` to the usings. R
             _claimsTaskPane.Visible = true;
             return _claimsControl;
         }
-        protected override Office.IRibbonExtensibility CreateRibbonExtensibilityObject()
-        {
-            return new RibbonExplorer();
-        }
-        private void ThisAddIn_Shutdown(object sender, System.EventArgs e)
-        {
-        }
 ```
 
-The `if (CustomTaskPanes.Count == 0)` check becomes `if (myCustomTaskPane == null)`. Without that change, the Settings pane would never be created once the Claims pane exists.
+- [ ] **Step 8: Add the ribbon buttons to `LLDOCX/LLDOCX/RibbonExplorer.xml`**
 
-- [ ] **Step 9: Add the ribbon buttons to `LLDOCX/LLDOCX/RibbonExplorer.xml`**
-
-After the `btnPanel` toggleButton line, add:
+After the `btnPanel` toggleButton line, and before `btnAccount`, add:
 
 ```xml
-          <button id="btnCheckClaims" label="Check Claims" size="large" onAction="OnCheckClaims" getImage="GetImages"
+          <button id="btnCheckClaims" label="Check Claims" size="large" onAction="OnCheckClaims" getImage="GetImages" getEnabled="GetEnabled"
                   screentip="Check patent claims"
                   supertip="Checks the claims for antecedent basis, claim dependency, and terminology problems. The document is not changed."/>
-          <button id="btnDeepCheck" label="Deep Check" size="large" onAction="OnDeepCheck" getImage="GetImages"
-                  screentip="Deep Check with Claude"
-                  supertip="Sends the claims to Claude for a second review. Asks before sending anything."/>
+          <button id="btnDeepCheck" label="Deep Check" size="large" onAction="OnDeepCheck" getImage="GetImages" getEnabled="GetEnabled"
+                  screentip="Deep Check with Claude" getSupertip="GetDeepCheckSupertip"/>
 ```
 
-- [ ] **Step 10: Add the ribbon callbacks in `LLDOCX/LLDOCX/RibbonExplorer.cs`**
+- [ ] **Step 9: Update `LLDOCX/LLDOCX/RibbonExplorer.cs`**
 
-Replace `GetImages` with:
+Add `using LLDOCX.Auth;` to the usings. Replace `GetImages` and `GetEnabled` with:
 
 ```csharp
         public Bitmap GetImages(Office.IRibbonControl control)
         {
-            if (control.Id == "btnScan" || control.Id == "btnCheckClaims" || control.Id == "btnDeepCheck")
+            if (control.Id == "btnScan" || control.Id == "btnAccount" || control.Id == "btnCheckClaims" || control.Id == "btnDeepCheck")
                 return Properties.Resources.LL_logo;
             if (isPressed)
                 return Properties.Resources.toggle_on;
             return Properties.Resources.toggle_off;
         }
+        public bool GetEnabled(Office.IRibbonControl control)
+        {
+            var addIn = Globals.ThisAddIn;
+            var gate = addIn.Gate;
+            if (gate == null || !gate.State.IsUnlocked) return false;
+            if (control.Id == "btnDeepCheck")
+                return gate.State.Status == GateStatus.Unlocked && addIn.GateConfig.DeepCheckAvailable;
+            return true;
+        }
 ```
 
-Add after `ShowSetting`:
+Add after `GetEnabled`:
 
 ```csharp
+        public string GetDeepCheckSupertip(Office.IRibbonControl control)
+        {
+            var addIn = Globals.ThisAddIn;
+            var gate = addIn.Gate;
+            if (gate == null) return "";
+            if (!gate.State.IsUnlocked) return gate.State.Message;
+            if (!addIn.GateConfig.DeepCheckAvailable) return "Deep Check is not configured. Contact your administrator.";
+            if (gate.State.Status == GateStatus.UnlockedOffline) return "Deep Check needs an internet connection.";
+            return "Sends the claims to lozaip.com's Deep Check service for a second review by Claude. Asks before sending anything.";
+        }
         public async void OnCheckClaims(Office.IRibbonControl control)
         {
             try { await Globals.ThisAddIn.ClaimsController.RunCheckAsync(); }
@@ -3485,29 +4662,31 @@ Add after `ShowSetting`:
         }
 ```
 
-- [ ] **Step 11: Build and verify in Word (manual)**
+- [ ] **Step 10: Build and verify in Word (manual)**
 
-Rebuild in Visual Studio. Expected: build succeeds. Press F5, then check each item:
+Rebuild in Visual Studio. Expected: the build succeeds. Press F5 and sign in with a lozaip.com account (gate plan Task 6), then check each item:
 
-1. The Home tab shows **Check Claims** and **Deep Check** in the LL-Docx group.
-2. Create a document with a heading `What is claimed is:`, then typed claims:
-   `1. A lamp comprising a base, wherein the shade is green.` / `2. The lamp of claim 3, wherein the base is round.` / `3. The lamp of claim 1, wherein the bulb is bright.`
-   Then a heading `ABSTRACT` and one paragraph. Click **Check Claims**. Expected: the "LL-DOCX Claims Check" pane opens. Claim 1 shows "No antecedent basis for 'the shade'". Claim 2 shows "comes after it". Claim 3 shows "the bulb". The abstract is not checked.
-3. Click a finding: the flagged words are selected in the document.
-4. Edit the flagged words, then click the same finding: the row shows "(stale – re-run)" and nothing is selected. Click **Re-run**: the findings refresh.
-5. Convert the claims to a Word numbered list (Home → Numbering) with the typed numbers removed. Click **Check Claims**. Expected: the same findings. Clicking still selects the correct words.
-6. Delete the "What is claimed is:" heading and click **Check Claims** with no selection. Expected: the "No claims section was found" message. Select the claims and click again: the findings appear, and the summary says "in selection".
-7. Change "Show:" to "Errors" and "Group:" to "Type": the list filters and regroups.
-8. On the Settings tab, untick "Check antecedent basis", click Save, and click Re-run: the antecedent findings are gone. Re-tick the box and save.
-9. Click **Settings** in the ribbon (the existing pane) and click its Save. Then reopen the Claims Settings tab: your claims settings are unchanged.
-10. Click **Deep Check** with no key: the message points to Settings, and the Settings tab is selected. Click **Set key…**, enter an invalid key `sk-ant-invalid`, and click **Deep Check** → **Send**. Expected: "The Claude API key was rejected…", and the rule findings stay in the pane.
-11. Set a valid key and click **Deep Check**. The confirmation dialog shows the claim count. Click Send: "Deep Check running…" appears with Cancel. When it finishes, any AI findings show Source "AI", and any disputed rule findings are struck through. Right-click an AI finding → **Dismiss AI finding**: it disappears.
-12. Disconnect the network and click **Deep Check**: "Could not reach the Claude API…" appears, and the findings remain.
-13. Click **Scan**: it behaves exactly as before.
+1. **Ribbon buttons.** The Home tab shows **Check Claims** and **Deep Check** in the LL-Docx group. Deep Check is disabled while the gateway isn't configured (`GateDefaults.GatewayUrl` is empty), and hovering explains "Deep Check is not configured."
+2. **Basic check.**
+   - Create a document with a heading `What is claimed is:`, then these typed claims:
+     - `1. A lamp comprising a base, wherein the shade is green.`
+     - `2. The lamp of claim 3, wherein the base is round.`
+     - `3. The lamp of claim 1, wherein the bulb is bright.`
+   - Then add a heading `ABSTRACT` and one paragraph, and click **Check Claims**.
+   - Expected: the "LL-DOCX Claims Check" pane opens. Claim 1 shows "No antecedent basis for 'the shade'", claim 2 shows "comes after it", and claim 3 shows "the bulb". The abstract is not checked.
+3. **Navigation.** Click a finding: the flagged words are selected in the document.
+4. **Stale findings.** Edit the flagged words, then click the same finding: the row shows "(stale – re-run)" and nothing is selected. Click **Re-run**: the findings refresh.
+5. **Auto-numbered claims.** Convert the claims to a Word numbered list (Home → Numbering) with the typed numbers removed, and click **Check Claims**. Expected: the same findings, and clicking still selects the correct words.
+6. **Selection mode.** Delete the "What is claimed is:" heading and click **Check Claims** with no selection. Expected: the "No claims section was found" message. Select the claims and click again: the findings appear, and the summary says "in selection".
+7. **Filter and grouping.** Change "Show:" to "Errors" and "Group:" to "Type": the list filters and regroups.
+8. **Settings tab.** Untick "Check antecedent basis", click Save, and click Re-run: the antecedent findings are gone. Re-tick the box and save.
+9. **Existing Settings pane.** Click **Settings** in the ribbon and click its Save. Then reopen the Claims Settings tab: your claims settings are unchanged.
+10. **Sign-out.** Click the Account button → sign out. The Claims Check pane hides, and Check Claims and Deep Check are disabled.
+11. **Scan.** Click **Scan** (signed in): it behaves exactly as before.
 
-If step 11 fails with `FileLoadException` or `FileNotFoundException` for an assembly such as `System.Text.Json` or `System.Memory`: confirm that `bin\Debug\LLDOCX.dll.config` exists and contains `bindingRedirect` entries, and that `AutoGenerateBindingRedirects` and `GenerateBindingRedirectsOutputType` from Task 1 are in the csproj. Rebuild.
+Deep Check end-to-end checks happen in Task 14, after the gateway is deployed.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add LLDOCX/LLDOCX
@@ -3518,50 +4697,48 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 12: Installer
+### Task 13: Installer components for the claims checker
 
 **Files:**
-- Modify: `LLDOCX/LLDOCXSetup/Product.wxs:61-90` (ComponentGroup `ProductComponents`)
+- Modify: `LLDOCX/LLDOCXSetup/Product.wxs` (`ProductComponents`, `Version`)
 
 **Interfaces:**
-- Consumes: Release build output of the add-in (Tasks 1–11)
-- Produces: an MSI that installs every assembly the add-in needs, plus `LLDOCX.dll.config`
+- Consumes: the Release build output of the add-in (Tasks 1–12) and the gate plan's `Product.wxs`
+- Produces: an MSI that also installs `LLDOCX.Claims.dll`, `LLDOCX.DeepCheck.dll` and their dependencies
 
 - [ ] **Step 1: List the assemblies the add-in now ships**
 
 In Visual Studio, switch to **Release** and rebuild. Then run:
 
 ```bash
-ls LLDOCX/bin/Release/*.dll LLDOCX/bin/Release/*.config
+ls LLDOCX/bin/Release/*.dll
 ```
 
-Expected: `LLDOCX.dll`, `LLDOCX.dll.config`, `LLDOCX.Claims.dll`, `LLDOCX.DeepCheck.dll`, `Anthropic.dll`, and their dependencies (for example `System.Text.Json.dll`, `System.Memory.dll`, `System.Buffers.dll`, `Microsoft.Bcl.AsyncInterfaces.dll`, `System.Runtime.CompilerServices.Unsafe.dll`, `System.Threading.Tasks.Extensions.dll`, `System.Text.Encodings.Web.dll`, `Microsoft.Extensions.AI.Abstractions.dll`, `System.Collections.Immutable.dll`, `System.Diagnostics.DiagnosticSource.dll`, `System.Net.ServerSentEvents.dll`, `System.Numerics.Vectors.dll`, `System.IO.Pipelines.dll`). The exact list comes from this command's output.
+Expected new entries since the gate plan: `LLDOCX.Claims.dll`, `LLDOCX.DeepCheck.dll`, `System.Text.Json.dll`, and its dependencies (for example `System.Text.Encodings.Web.dll`, `System.Memory.dll`, `System.Buffers.dll`, `System.Runtime.CompilerServices.Unsafe.dll`, `System.Threading.Tasks.Extensions.dll`, `System.Numerics.Vectors.dll`, `Microsoft.Bcl.AsyncInterfaces.dll`). Some of these may already be listed from the gate plan. The command's output is authoritative.
 
 - [ ] **Step 2: Add a component for each new file**
 
-In `Product.wxs`, uncomment the existing `LLDOCX_dll.config_Component` block (lines 76–79). Then, inside `<ComponentGroup Id="ProductComponents" ...>`, add one block per DLL from Step 1 that isn't already listed. Use the file name with `.` and `-` replaced by `_` in the Ids, for example:
+Inside `<ComponentGroup Id="ProductComponents" ...>`, add one block per DLL from Step 1 that isn't already listed. In the Ids, replace `.` and `-` with `_`:
 
 ```xml
-			<Component Id="LLDOCX_Claims_dll_Component">
-				<File Id="LLDOCX_Claims_dll" KeyPath="yes"
-							  Name="LLDOCX.Claims.dll" Source="$(var.AddinFiles)" />
+			<Component Id="LLDOCX_Claims_dll_Component" Win64="no">
+				<File Id="LLDOCX_Claims_dll" KeyPath="yes" Name="LLDOCX.Claims.dll" Source="$(var.AddinFiles)" />
 			</Component>
-			<Component Id="LLDOCX_DeepCheck_dll_Component">
-				<File Id="LLDOCX_DeepCheck_dll" KeyPath="yes"
-							  Name="LLDOCX.DeepCheck.dll" Source="$(var.AddinFiles)" />
+			<Component Id="LLDOCX_DeepCheck_dll_Component" Win64="no">
+				<File Id="LLDOCX_DeepCheck_dll" KeyPath="yes" Name="LLDOCX.DeepCheck.dll" Source="$(var.AddinFiles)" />
 			</Component>
-			<Component Id="Anthropic_dll_Component">
-				<File Id="Anthropic_dll" KeyPath="yes"
-							  Name="Anthropic.dll" Source="$(var.AddinFiles)" />
+			<Component Id="System_Text_Json_dll_Component" Win64="no">
+				<File Id="System_Text_Json_dll" KeyPath="yes" Name="System.Text.Json.dll" Source="$(var.AddinFiles)" />
 			</Component>
 ```
 
-Repeat the same three-line pattern for every remaining DLL in the Step 1 list.
+Repeat the same pattern for every remaining new DLL. Then change the `Version` attribute of `<Product>` to `1.2.0.0`.
 
 - [ ] **Step 3: Build and test the installer (manual)**
 
-Build the `LLDOCXSetup` project in Release. Install the MSI on a test machine, or after uninstalling the debug add-in. Open Word and run steps 2 and 11 from the Task 11 checklist.
-Expected: Check Claims and Deep Check both work from the installed add-in.
+1. Build `LLDOCXSetup` in Release | x64 and sign the MSI (gate plan Task 7, Step 4).
+2. Install it over the gate-only version on a test VM. Expected: the upgrade succeeds, and the user stays signed in.
+3. Run checklist items 2 and 3 from Task 12. Expected: Check Claims works from the installed add-in.
 
 - [ ] **Step 4: Commit**
 
@@ -3574,13 +4751,218 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
+### Task 14: Deploy the gateway and enable Deep Check
+
+**Files:**
+- Create: `LLDOCX/docs/admin/deep-check-setup.md`
+- Modify: `LLDOCX/LLDOCX.Auth/GateConfig.cs` (`GateDefaults.GatewayUrl`, `GateDefaults.GatewayScope`)
+
+**Interfaces:**
+- Consumes: the gateway (Task 10), the add-in (Task 12), the installer (Task 13), and the gate plan's `docs/admin/sign-in-setup.md`
+- Produces:
+  - a running gateway at `https://<function app>.azurewebsites.net/api/deepcheck`;
+  - an add-in build with the gateway values compiled in;
+  - the admin guide.
+
+lozaip.com's Azure administrator runs this task together with the developer, using the guide written in Step 1.
+
+- [ ] **Step 1: Write `LLDOCX/docs/admin/deep-check-setup.md`**
+
+````markdown
+# LL-Docx Deep Check: Azure setup (administrators)
+
+Deep Check sends a document's claims, after the user confirms, to an Azure Function owned by lozaip.com. The function checks that
+the caller is signed in with a lozaip.com account, then asks Claude for a review. The model, prompt and credentials exist only in
+Azure: nothing secret is on users' PCs. Claim text is never logged.
+
+Prerequisites: the add-in registration from `sign-in-setup.md`, an Azure subscription, the Azure CLI (`az login`), and the
+.NET 10 SDK.
+
+## 1. Claude in Microsoft Foundry
+
+1. In the Foundry portal (https://ai.azure.com), create or choose a Foundry resource. Note its **resource name**.
+2. Deploy **claude-opus-5-5**, choosing **Hosted on Azure** (Global, or Data Zone for US-only processing). Keep the deployment
+   name `claude-opus-5-5`, or note your custom name.
+3. Make sure Microsoft Entra ID authentication is enabled for the resource.
+
+## 2. Register the gateway API in Entra ID
+
+1. **App registrations** → **New registration**: `LL-Docx Gateway`, single tenant. Note its **Application (client) ID**.
+2. **Expose an API** → set the Application ID URI to `api://<gateway client id>`. Then **Add a scope**:
+   - Scope name: `DeepCheck.Use`
+   - Who can consent: **Admins only**
+   - Display name: "Use LL-Docx Deep Check"
+3. **Manifest:** set `"requestedAccessTokenVersion": 2` (in older manifests, `"accessTokenAcceptedVersion": 2`). Save.
+4. Optional, to choose who may use Deep Check:
+   - Under **App roles**, create `DeepCheck.User` (allowed member types: Users/Groups).
+   - Then under **Enterprise applications** → **LL-Docx Gateway** → **Users and groups**, assign the security group.
+5. Go back to the **LL-Docx Add-in** registration:
+   - **API permissions** → **Add** → **APIs my organization uses** → **LL-Docx Gateway** → **DeepCheck.Use** (delegated).
+   - Then **Grant admin consent**.
+
+## 3. Create the Function App
+
+Replace the angle-bracket values, then run:
+
+```bash
+az group create -n rg-lldocx -l eastus2
+az storage account create -n <storageaccountname> -g rg-lldocx -l eastus2 --sku Standard_LRS
+az functionapp create -n <functionappname> -g rg-lldocx --storage-account <storageaccountname> \
+  --flexconsumption-location eastus2 --runtime dotnet-isolated --runtime-version 10.0
+az functionapp update -n <functionappname> -g rg-lldocx --set httpsOnly=true
+az functionapp identity assign -n <functionappname> -g rg-lldocx
+```
+
+If the CLI rejects runtime version 10.0, list what's available with
+`az functionapp list-flexconsumption-runtimes -l eastus2 --runtime dotnet-isolated`, and choose the newest supported .NET LTS. Also
+change `TargetFramework` in `LLDOCX.Gateway.csproj` to match.
+
+Give the function's managed identity access to Foundry:
+
+```bash
+az role assignment create --assignee <principalId from identity assign> \
+  --role "Cognitive Services User" --scope <Foundry resource ID>
+```
+
+## 4. Configure the gateway
+
+```bash
+az functionapp config appsettings set -n <functionappname> -g rg-lldocx --settings \
+  Gateway__TenantId=<tenant id> \
+  "Gateway__Audience=api://<gateway client id>,<gateway client id>" \
+  Gateway__RequiredScope=DeepCheck.Use \
+  Gateway__RequiredRole=<DeepCheck.User, or leave empty> \
+  Gateway__ClaudeProvider=Foundry \
+  Gateway__FoundryResource=<Foundry resource name> \
+  Gateway__Model=<deployment name, default claude-opus-5-5> \
+  Gateway__Effort=high \
+  Gateway__MaxInputChars=200000 \
+  Gateway__RequestsPerUserPerHour=30
+```
+
+**To use the Anthropic API instead of Foundry:**
+1. Store the key in Key Vault, and give the function's identity the "Key Vault Secrets User" role.
+2. Set `Gateway__ClaudeProvider=Anthropic` and `Gateway__AnthropicApiKey=@Microsoft.KeyVault(SecretUri=https://<vault>.vault.azure.net/secrets/<name>/)`.
+
+**To change the model later:** change `Gateway__Model`. No add-in update is needed.
+
+## 5. Deploy
+
+From `Tools/LLDOCX/`:
+
+```bash
+dotnet publish LLDOCX.Gateway -c Release -o publish/gateway
+cd publish/gateway && zip -r ../gateway.zip . && cd ../..
+az functionapp deployment source config-zip -g rg-lldocx -n <functionappname> --src publish/gateway.zip
+```
+
+On Windows without `zip`, use PowerShell instead: `Compress-Archive -Path publish/gateway/* -DestinationPath publish/gateway.zip`.
+
+## 6. Tell the developer the add-in values
+
+| Value | Example |
+|---|---|
+| Gateway URL | `https://<functionappname>.azurewebsites.net/api/deepcheck` |
+| Gateway scope | `api://<gateway client id>/DeepCheck.Use` |
+
+## Limits to know
+
+- **Request size:** Azure returns an error if a request runs longer than about 230 seconds. The gateway stops Claude after 210 seconds
+  and tells the user to check a selection of claims. If this happens often, set `Gateway__Effort=medium`.
+- **Rate limit:** the per-user limit is kept in memory on each instance, so it is approximate when Azure runs several instances.
+- **What is logged:** Application Insights records who ran Deep Check, when, the claim count and size, the latency and the outcome. It
+  never records claim text or Claude's output.
+````
+
+- [ ] **Step 2: Deploy (manual, administrator)**
+
+Follow sections 1–5 of the guide.
+Expected:
+- `az functionapp function list -g rg-lldocx -n <functionappname> --query "[].name"` lists `deepcheck`.
+- In the portal, the Function App's **Log stream** shows the host starting with no `Gateway:` configuration errors.
+
+- [ ] **Step 3: Smoke-test the gateway without Word (manual, optional)**
+
+1. **Allow the Azure CLI to request a gateway token** (temporarily). In the gateway's **Expose an API** page, add the client application `04b07795-8ddb-461a-bbee-02f9e1bf7b46`, which is the Azure CLI, for the `DeepCheck.Use` scope.
+2. **Send a test request:**
+
+```bash
+TOKEN=$(az account get-access-token --scope "api://<gateway client id>/DeepCheck.Use" --query accessToken -o tsv)
+curl -s -X POST "https://<functionappname>.azurewebsites.net/api/deepcheck" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"claims":[{"number":1,"text":"A lamp comprising a base, wherein the shade is green.","canceled":false}],"ruleFindings":[]}'
+```
+
+Expected: a JSON body with `findings` and `disputes` arrays.
+
+3. **Check the rejection without a token:**
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://<functionappname>.azurewebsites.net/api/deepcheck" -d '{}'
+```
+
+Expected: `401`.
+
+4. **Remove the Azure CLI client authorization** again.
+
+- [ ] **Step 4: Compile the gateway values into the add-in**
+
+In `LLDOCX/LLDOCX.Auth/GateConfig.cs`, class `GateDefaults`, set the two constants to the real values from the guide's section 6:
+
+```csharp
+        public const string GatewayUrl = "https://<functionappname>.azurewebsites.net/api/deepcheck";
+        public const string GatewayScope = "api://<gateway client id>/DeepCheck.Use";
+```
+
+Run: `dotnet test LLDOCX.Auth.Tests`
+Expected: all pass; the tests don't depend on these constants.
+
+- [ ] **Step 5: Verify Deep Check end-to-end in Word (manual)**
+
+Rebuild the add-in and press F5. Sign out and back in, so the new gateway scope is consented and cached. Then check:
+
+1. **Enabled when online.** Deep Check is enabled. Hovering shows "Sends the claims to lozaip.com's Deep Check service…"
+2. **Confirmation and results.**
+   - On the Task 12 test document, click **Deep Check**. The confirmation dialog shows the claim count.
+   - Click Send: "Deep Check running…" appears with Cancel.
+   - When it finishes, any AI findings show Source "AI", and any disputed rule findings are struck through.
+   - Right-click an AI finding → **Dismiss AI finding**: it disappears.
+3. **"Don't ask again".** Run Deep Check again with "Don't ask again" ticked, then once more. The second time there is no dialog.
+4. **Unauthorized user.** With `Gateway__RequiredRole=DeepCheck.User` set and a test user not in the group, click Deep Check. Expected: "Your account isn't authorized for Deep Check. Contact your administrator." The rule findings stay.
+5. **Rate limit.** Set `Gateway__RequestsPerUserPerHour=1` and run Deep Check twice. The second run shows "Deep Check limit reached; try again in N minutes." Restore the setting.
+6. **Offline.** Disconnect the network. Deep Check becomes disabled on the next ribbon refresh, with the tooltip "Deep Check needs an internet connection." If you click it during the transition, "Could not reach the Deep Check service…" appears and the findings remain.
+7. **Logging.** In Application Insights → Logs, run `traces | where message startswith "Deep Check" | take 20`. Each entry shows the outcome, user, claim count, size and milliseconds, and no claim text.
+
+- [ ] **Step 6: Ship the release**
+
+1. Rebuild the add-in and installer in Release | x64.
+2. Sign the build (gate plan Task 7, Step 4), bump the MSI `Version`, and distribute it.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add LLDOCX/docs/admin/deep-check-setup.md LLDOCX/LLDOCX.Auth/GateConfig.cs
+git commit -m "docs(lldocx): add Deep Check Azure setup guide and enable the gateway
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
 ## Spec updates made with this plan
 
 These changes were made to the spec while writing this plan, and the spec file has been updated to match:
 
 - The engine's input type is `RawParagraph`, one per document paragraph. `ClaimsAnalyzer.Analyze` returns an `AnalysisResult` that holds both the parsed claims and the findings, so the pane can show claim counts.
-- The Claude client lives in a separate `LLDOCX.DeepCheck` project, which keeps the engine free of the SDK. The tests run on net8.0, and the add-in moves to .NET Framework 4.7.2. This is now decided, not conditional.
 - Introducing determiners: `each`, `any`, `one`, and bare plurals were dropped to cut false positives. Phrases like "The method of claim 1" are skipped automatically, so the allowlist doesn't need "the method of claim" entries, and "the group consisting of" becomes "the group".
 - Typo rule: edit distance 1 for words of 5–7 letters and 2 for 8+ letters; inflections are excluded instead of being flagged.
 - Singular/plural drift is detected during the antecedent pass and controlled by the terminology toggle.
 - The Claims settings live on a Settings tab inside the Claims Check pane rather than in the fixed-layout existing Settings pane.
+- **Revised 2026-11-01 (Azure gateway):**
+  - **Framework.** Test projects and the gateway target **.NET 10** (LTS), because .NET 8 reaches end of support on 2026-11-10.
+  - **Wire contract.** The response body reuses Claude's structured-output schema (`claim`, `quote` and so on) instead of new field names. Error bodies are `{ error: { code, message } }`, with codes listed in `ErrorCodes`.
+  - **Gateway settings.** The gateway setting is `FoundryResource` (the resource name), not an endpoint URL, because the C# Foundry client builds the URL from the resource name.
+  - **No server-side fallback.** Both providers use the standard (non-beta) Messages call with no server-side refusal fallback, which Foundry doesn't support. A refusal returns 422 with the same message for either provider.
+  - **Timeouts.** Azure stops HTTP requests after about 230 seconds, so the gateway stops the Claude call after 210 seconds (504 `timeout`), and the add-in's HTTP timeout is 240 seconds, not 5 minutes.
+  - **Gateway tests.** These live in a separate `LLDOCX.Gateway.Tests` project, so the claims engine tests don't depend on the Azure and Anthropic packages.
+  - **Source of the old Task 1.** Tracking the source and retargeting to 4.7.2 is now Task 1 of the sign-in gate plan.

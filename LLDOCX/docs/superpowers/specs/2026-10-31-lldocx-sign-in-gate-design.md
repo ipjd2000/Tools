@@ -45,7 +45,8 @@ Only people with a lozaip.com Microsoft 365 account may use the LL-Docx tools. T
 | Configuration missing or invalid | — | **Locked** | "LL-Docx is not configured. Contact your administrator." |
 
 - **Clock rollback:** a last-verified time later than the current time is treated as expired.
-- **Re-checks:** the gate re-checks silently whenever a gated button is clicked and the last online check is more than 24 hours old, so a Word session left open for weeks still notices a disabled account. Deep Check always requests a fresh token, so it fails immediately for a disabled account whatever the gate state.
+- **Startup state:** until the first silent check finishes, the gate is Locked (`Checking`), with the message "Verifying your lozaip.com account…".
+- **Re-checks:** the gate re-checks silently whenever a gated button is clicked and the last online check is more than 24 hours old, so a Word session left open for weeks still notices a disabled account. While unlocked offline, while locked for being offline too long, or while still checking, a button click retries the check, at most every 5 minutes. Deep Check always requests a fresh token, so it fails immediately for a disabled account whatever the gate state.
 - **When the state changes to Locked:** the ribbon is invalidated, every gated button is disabled, and open LL-Docx task panes are hidden.
 
 ## Configuration
@@ -57,7 +58,7 @@ The values are compiled into the add-in as constants in `GateDefaults`. The add-
 | `TenantId` | The lozaip.com Entra tenant ID | **Not overridable.** This stops the add-in from being pointed at another tenant |
 | `ClientId` | The add-in's Entra app registration (a public client) | `ClientId` (REG_SZ, must be a GUID) |
 | `GatewayUrl` | The Deep Check gateway endpoint (see the claims checker spec) | `GatewayUrl` (REG_SZ, must be `https://`) |
-| `GatewayScope` | `api://<gateway app ID>/DeepCheck.Use`. Requested at sign-in, so a single consent covers Deep Check | `GatewayScope` (REG_SZ) |
+| `GatewayScope` | `api://<gateway app ID>/DeepCheck.Use`. Requested at sign-in, so a single consent covers Deep Check (`User.Read` is requested when no gateway is configured) | `GatewayScope` (REG_SZ) |
 | `OfflineGraceDays` | 30 | `OfflineGraceDays` (REG_DWORD). It can only **lower** the value, and is clamped to 1–30 |
 
 - **Invalid overrides** are ignored and logged, and the compiled default is used.
@@ -69,13 +70,13 @@ The values are compiled into the add-in as constants in `GateDefaults`. The add-
 
 The same installer serves Microsoft 365 and standalone Office. The gate is independent of how Office is licensed, and installing requires no sign-in.
 
-- **One per-machine MSI** (WiX, `InstallScope="perMachine"`, needs administrator rights). Installing is as simple as double-clicking it. It can also be installed silently (`msiexec /i LLDOCXSetup.msi /qn`) through Group Policy software installation, a login script or any deployment tool. No tool is required.
+- **One per-machine x64 MSI** (WiX, `InstallScope="perMachine"`, needs administrator rights and 64-bit Windows; x64 so it can register in both registry views). Installing is as simple as double-clicking it. It can also be installed silently (`msiexec /i LLDOCXSetup.msi /qn`) through Group Policy software installation, a login script or any deployment tool. No tool is required.
 - **Registration for all users.** The add-in is registered under `HKLM\Software\Microsoft\Office\Word\Addins\LLDOCX`, so every user of the PC gets it. On 64-bit Windows it is registered in both the 64-bit and the `WOW6432Node` views, covering 64-bit and 32-bit Office. This fixes the current installer, which writes the registration to `HKCU` from a per-machine package, so only the user who ran it sees the add-in.
 - **Prerequisite checks:** the installer refuses to install, with a clear message, when any of these is missing:
   - .NET Framework 4.7.2 or later;
   - the VSTO 2010 runtime (`HKLM\SOFTWARE\Microsoft\VSTO Runtime Setup\v4R`, either view);
   - Word 2016 or later.
-- **Code signing:** the add-in manifests and assemblies are signed with lozaip.com's production code-signing certificate, as is the MSI. The temporary development certificate (`LLDOCX_TemporaryKey.pfx`) is never used for a release and is never committed.
+- **Code signing:** the add-in's VSTO manifests, whose hashes cover the add-in DLLs, are signed with lozaip.com's production code-signing certificate, as is the MSI. The temporary development certificate (`LLDOCX_TemporaryKey.pfx`) is never used for a release and is never committed.
 - **Updates:** run a newer MSI. The existing `MajorUpgrade` element replaces the old version in place. Sign-in state (in the user profile) survives upgrades.
 - **Uninstalling** removes the files and the registration. Per-user sign-in data in `%LOCALAPPDATA%\LL-Docx` is left in place, and Sign out clears it.
 - **What users see:**
