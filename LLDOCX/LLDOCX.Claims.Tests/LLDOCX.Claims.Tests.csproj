@@ -13,4 +13,8 @@
   <ItemGroup>
     <ProjectReference Include="..\LLDOCX.Claims\LLDOCX.Claims.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Update="Fixtures\*.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
+

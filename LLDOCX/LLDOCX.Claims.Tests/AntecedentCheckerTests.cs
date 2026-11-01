@@ -99,4 +99,34 @@ public class AntecedentCheckerTests
         var f = Check("1. A board comprising a plurality of sensors, wherein the sensors are calibrated.");
         Assert.AreEqual(0, f.Count, T.Dump(f));
     }
+
+    [TestMethod]
+    public void Bare_plural_or_mass_noun_counts_as_introduction()
+    {
+        var f = Check("1. A method comprising receiving data from a server, wherein the data is encrypted.");
+        Assert.AreEqual(0, f.Count(x => x.Severity == Severity.Error), T.Dump(f));
+    }
+
+    [TestMethod]
+    public void Claim_subject_starting_with_the_is_not_flagged()
+    {
+        var f = Check(
+            "1. A compound of formula I.",
+            "2. The sodium salt of the compound of claim 1.");
+        Assert.AreEqual(0, f.Count(x => x.Severity == Severity.Error), T.Dump(f));
+    }
+
+    [TestMethod]
+    public void Elliptical_coordinated_modifier_matches_compound_term()
+    {
+        var f = Check("1. A garment comprising a front section and a rear section, wherein said front and rear sections are padded.");
+        Assert.AreEqual(0, f.Count(x => x.Severity == Severity.Error), T.Dump(f));
+    }
+
+    [TestMethod]
+    public void The_latter_is_not_flagged()
+    {
+        var f = Check("1. A lamp comprising a base and a shade, wherein the latter is green.");
+        Assert.AreEqual(0, f.Count(x => x.Severity == Severity.Error), T.Dump(f));
+    }
 }

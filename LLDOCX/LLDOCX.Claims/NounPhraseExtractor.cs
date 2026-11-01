@@ -69,6 +69,13 @@ namespace LLDOCX.Claims
             "means", "series", "species", "lens", "gas", "chassis", "bias", "canvas", "atlas"
         };
 
+        /// <summary>Adjectives (positional or participial) that look like -ing/-ed words and may precede a plural noun.</summary>
+        static readonly HashSet<string> ModifierWords = new HashSet<string>
+        {
+            "upper", "lower", "left", "right", "outer", "inner", "front", "rear", "top", "bottom", "corresponding",
+            "underlying", "overlying", "respective", "remaining", "existing", "resulting"
+        };
+
         static readonly Regex ClaimRefAfter = new Regex(
             @"\G\s*(?:,\s*)?(?:of|according\s+to|as\s+(?:claimed|recited|defined|set\s+forth|described)\s+in|in)\s+(?:any\s+(?:one\s+)?of\s+)?(?:the\s+(?:preceding|previous|foregoing)\s+)?claims?\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -115,12 +122,15 @@ namespace LLDOCX.Claims
                     if (!tok.IsWord) break;
                     string w = tok.Lower;
                     if (Boundary.Contains(w)) break;
-                    if (nonOrdinal > 0 && !NounExceptions.Contains(w) &&
-                        (w.EndsWith("ing") || w.EndsWith("ed") || w.EndsWith("ly") || TextUtil.IsPlural(w)))
+                    bool afterModifier = phrase.Words.Count > 0 && ModifierWords.Contains(phrase.Words[phrase.Words.Count - 1]);
+                    if (nonOrdinal > 0 && !NounExceptions.Contains(w) && !ModifierWords.Contains(w) &&
+                        (w.EndsWith("ing") || w.EndsWith("ed") || w.EndsWith("ly") || (TextUtil.IsPlural(w) && !afterModifier)))
                         break;
                     if (phrase.Words.Count == 0) phrase.WordsStart = tok.Index;
                     phrase.Words.Add(w);
-                    if (!Ordinals.Contains(w)) nonOrdinal++;
+                    bool participialLead = phrase.Words.Count == 1 && nonOrdinal == 0 && IsParticiple(w) &&
+                                           j + 1 < tokens.Count && tokens[j + 1].IsWord && !Boundary.Contains(tokens[j + 1].Lower);
+                    if (!Ordinals.Contains(w) && !participialLead) nonOrdinal++;
                     lastEnd = tok.End;
                     j++;
                 }
@@ -141,6 +151,9 @@ namespace LLDOCX.Claims
             }
             return result;
         }
+
+        static bool IsParticiple(string w) =>
+            (w.EndsWith("ed") || w.EndsWith("ing")) && !NounExceptions.Contains(w);
 
         static bool Matches(List<Token> tokens, int i, string[] words)
         {

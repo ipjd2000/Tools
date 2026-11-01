@@ -52,4 +52,20 @@ public class NounPhraseExtractorTests
         Assert.AreEqual("an outer housing", p[0].Text);
         Assert.AreEqual("spring", p[1].Key);
     }
+
+    [TestMethod]
+    public void Adjective_heads_keep_following_plural_noun()
+    {
+        var p = NounPhraseExtractor.Extract("wherein the upper ends are joined and the corresponding underlying padding section flexes");
+        Assert.AreEqual("upper end", p[0].Key, string.Join(" | ", p.Select(x => x.Key)));
+        Assert.AreEqual("corresponding underlying padding section", p[1].Key, string.Join(" | ", p.Select(x => x.Key)));
+    }
+
+    [TestMethod]
+    public void Leading_participle_is_a_modifier_not_a_phrase_end()
+    {
+        var p = NounPhraseExtractor.Extract("based on the stored partitioning information, and the selected sensors");
+        Assert.AreEqual("stored partitioning information", p[0].Key, string.Join(" | ", p.Select(x => x.Key)));
+        Assert.AreEqual("selected sensor", p[1].Key, string.Join(" | ", p.Select(x => x.Key)));
+    }
 }

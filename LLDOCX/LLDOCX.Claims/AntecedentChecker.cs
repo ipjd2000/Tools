@@ -52,7 +52,7 @@ namespace LLDOCX.Claims
                     }
                     else
                     {
-                        CheckReference(claim, p, known, allow, reportPlurality, findings);
+                        CheckReference(claim, p, known, allow, reportPlurality, context, findings);
                     }
                 }
             }
@@ -60,9 +60,11 @@ namespace LLDOCX.Claims
         }
 
         static void CheckReference(Claim claim, NounPhrase p, List<NounPhrase> known, List<string> allow,
-            bool reportPlurality, List<Finding> findings)
+            bool reportPlurality, Context context, List<Finding> findings)
         {
             if (IsAllowed(p, allow)) return;
+            // The subject of a dependent claim ("The sodium salt of the compound of claim 1") is the claim's own term.
+            if (p.Start == 0 && claim.DependsOn.Count > 0) return;
 
             var exact = known.FirstOrDefault(k => k.Key == p.Key);
             if (exact != null)
@@ -89,11 +91,19 @@ namespace LLDOCX.Claims
                 return;
             }
 
-            var weak = known.FirstOrDefault(k => k.HeadKey == p.HeadKey);
+            var weak = known.FirstOrDefault(k => k.HeadKey == p.HeadKey)
+                       ?? known.FirstOrDefault(k => k.ModifierKeys.Contains(p.HeadKey));
             if (weak != null)
             {
                 findings.Add(Finding.At(claim, p.Start, p.Length, FindingType.Antecedent, Severity.Info,
                     $"'{p.Text}' only partly matches '{weak.Text}' (same noun, different modifiers). Check its antecedent basis."));
+                return;
+            }
+
+            if (context.AppearsBareBefore(claim, p))
+            {
+                findings.Add(Finding.At(claim, p.Start, p.Length, FindingType.Antecedent, Severity.Info,
+                    $"'{p.Text}' refers to '{p.Head}', which appears earlier without an article. Check its antecedent basis."));
                 return;
             }
 
@@ -122,6 +132,7 @@ namespace LLDOCX.Claims
         static bool IsAllowed(NounPhrase p, List<string> allow)
         {
             if (Units.Contains(p.HeadKey)) return true;
+            if (p.Words.Count == 1 && (p.Head == "latter" || p.Head == "former")) return true;
             string key = p.Key;
             return allow.Any(a => key == a || key.StartsWith(a + " "));
         }
@@ -145,6 +156,40 @@ namespace LLDOCX.Claims
             {
                 _byNumber = byNumber;
                 _phrases = phrases;
+            }
+
+            /// <summary>True if the phrase's head noun occurs earlier in the claim or its ancestors without a determiner (a bare plural or mass-noun introduction).</summary>
+            public bool AppearsBareBefore(Claim claim, NounPhrase p)
+            {
+                if (HasBare(claim.FullText, p.HeadKey, p.Start)) return true;
+                var seen = new HashSet<int>();
+                var stack = new Stack<int>(claim.DependsOn);
+                while (stack.Count > 0)
+                {
+                    int n = stack.Pop();
+                    Claim parent;
+                    if (!seen.Add(n) || !_byNumber.TryGetValue(n, out parent)) continue;
+                    if (HasBare(parent.FullText, p.HeadKey, parent.FullText.Length)) return true;
+                    foreach (var d in parent.DependsOn) stack.Push(d);
+                }
+                return false;
+            }
+
+            static readonly HashSet<string> Articles = new HashSet<string>
+            {
+                "the", "said", "a", "an", "another", "each", "every", "any", "one", "more", "plurality"
+            };
+
+            static bool HasBare(string text, string headKey, int limit)
+            {
+                var tokens = TextUtil.Tokenize(text);
+                for (int i = 0; i < tokens.Count && tokens[i].Index < limit; i++)
+                {
+                    if (!tokens[i].IsWord || TextUtil.Singularize(tokens[i].Lower) != headKey) continue;
+                    string prev = i > 0 && tokens[i - 1].IsWord ? tokens[i - 1].Lower : "";
+                    if (!Articles.Contains(prev)) return true;
+                }
+                return false;
             }
 
             /// <summary>Terms introduced by the claim's ancestors; for multiple dependency, only terms every branch provides.</summary>

@@ -1,0 +1,12 @@
+1. [R-(R*,R*)]-2-(4-fluorophenyl)-β,δ-dihydroxy-5-(1-methylethyl)-3-phenyl-4-[(phenylamino)-carbonyl]-1H-pyrrole-1-heptanoic acid or (2R-trans)-5-(4-fluorophenyl)-2-(1-methylethyl)-N,4-diphenyl-1-[2-(tetrahydro-4-hydroxy-6-oxo-2H-pyran-2-yl)ethyl]-1H-pyrrole-3-carboxamide; or pharmaceutically acceptable salts thereof.
+2. A compound of claim 1 which is [R-(R*R*)]-2-(4-fluorophenyl)-β-δ-dihydroxy-5-(1-methylethyl)-3-phenyl-4-[(phenylamino)carbonyl]-1H-pyrrole-1-heptanoic acid.
+3. A compound of claim 1 which is (2R-trans)-5-(4-fluorophenyl)-2-(1-methylethyl)-N,4-diphenyl-1-[2-(tetrahydro-4-hydroxy-6-oxo-2H-pyran-2-yl)ethyl]-1H-pyrrole-3-carboxamide.
+4. The monosodium salt of the compound of claim 2.
+5. The monopotassium salt of the compound of claim 2.
+6. The hemicalcium salt of the compound of claim 2.
+7. The N-methylglucamine salt of the compound of claim 2.
+8. The hemimagnesium salt of the compound of claim 2.
+9. The hemizinc salt of the compound of claim 2.
+10. The 1-deoxy-1-(methylamino)-D-glucitol mixture with the compound of claim 2.
+11. A pharmaceutical composition for treating hypercholesterolemia comprising a hypocholesterolemic effective amount of a compound of claim 1 and a pharmaceutically acceptable carrier.
+12. A method of inhibiting cholesterol synthesis in a human suffering from hypercholesterolemia comprising administering a compound of claim 1 in unit dosage form.
