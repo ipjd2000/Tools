@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+	<Product Id="*" Name="LLDOCXSetup" Language="1033" Version="1.0.0.3" Manufacturer="LLDOCX" UpgradeCode="ba7c8330-a0d4-4900-b79c-0ef68ac8db75">
+		<Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+
+		<MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." AllowSameVersionUpgrades="yes" />
+		<PropertyRef Id="WIX_IS_NETFRAMEWORK_46_OR_LATER_INSTALLED"/>
+		<Condition Message="This application requires .NET Framework 4.6.Please download and install from http://www.microsoft.com/en-us/download/details.aspx?id=17718">
+			<![CDATA[Installed OR WIX_IS_NETFRAMEWORK_46_OR_LATER_INSTALLED]]>
+		</Condition>
+		<Media Id="1" Cabinet="LLDOCX.cab" EmbedCab="yes"/>
+
+		<Feature Id="ProductFeature" Title="LLDOCXSetup" Level="1">
+			<ComponentGroupRef Id="ProductComponents" />
+			<ComponentRef Id="Registry_FriendlyName" />
+			<ComponentRef Id="Registry_Description" />
+			<ComponentRef Id="Registry_Manifest" />
+			<ComponentRef Id="Registry_LoadBehavior" />
+		</Feature>
+		<UIRef Id="WixUI_Mondo"></UIRef>
+		<UIRef Id="WixUI_ErrorProgressText" />
+		<WixVariable Id="WixUILicenseRtf" Value="EULA.rtf" />
+		<Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Thank you for installing LLDOCX Add-In." />
+	</Product>
+
+	<Fragment>
+		<Directory Id="TARGETDIR" Name="SourceDir">
+			<Directory Id="ProgramFilesFolder">
+				<Directory Id="INSTALLFOLDER" Name="LLDOCX" />
+				<Component Id="Registry_FriendlyName">
+					<RegistryValue Id="RegKey_FriendlyName" Root="HKCU"
+											 Key="Software\Microsoft\Office\Word\Addins\LLDOCX"
+											 Name="FriendlyName"
+											 Value="LLDOCX Plugin"
+											 Type="string" KeyPath="yes" />
+				</Component>
+				<Component Id="Registry_Description">
+					<RegistryValue Id="RegKey_Description" Root="HKCU"
+											 Key="Software\Microsoft\Office\Word\Addins\LLDOCX"
+											 Name="Description"
+											 Value="LLDOCX Plugin for Word"
+											 Type="string" KeyPath="yes" />
+				</Component>
+				<Component Id="Registry_Manifest">
+					<RegistryValue Id="RegKey_Manifest" Root="HKCU"
+											 Key="Software\Microsoft\Office\Word\Addins\LLDOCX"
+											 Name="Manifest" Value="[INSTALLFOLDER]LLDOCX.vsto|vstolocal"
+											 Type="string" KeyPath="yes" />
+				</Component>
+				<Component Id="Registry_LoadBehavior">
+					<RegistryValue Id="RegKey_LoadBehavior" Root="HKCU"
+											 Key="Software\Microsoft\Office\Word\Addins\LLDOCX"
+											 Name="LoadBehavior" Value="3"
+											 Type="integer" KeyPath="yes" />
+				</Component>
+			</Directory>
+		</Directory>
+	</Fragment>
+
+	<Fragment>
+		<ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+			<Component Id="LLDOCX_vsto_Component">
+				<File Id="LLDOCX_vsto" KeyPath="yes"
+							  Name="LLDOCX.vsto" Source="$(var.AddinFiles)"></File>
+			</Component>
+
+			<Component Id="LLDOCX_dll_manifest_Component">
+				<File Id="LLDOCX.dll.manifest" KeyPath="yes"
+							  Name="LLDOCX.dll.manifest" Source="$(var.AddinFiles)"></File>
+			</Component>
+
+			<Component Id="LLDOCX_dll_Component" >
+				<File Id="LLDOCX_dll" KeyPath="yes"
+							  Name="LLDOCX.dll" Source="$(var.AddinFiles)" />
+			</Component>
+			<!--<Component Id="LLDOCX_dll.config_Component" >
+        <File Id="LLDOCX.dll.config" KeyPath="yes"
+					  Name="LLDOCX.dll.config" Source="$(var.AddinFiles)" />
+      </Component>-->
+			<Component Id="MSOfficeToolsCommon_dll_Component">
+				<File Id="MSOfficeToolsCommon_dll" KeyPath="yes"
+							  Name="Microsoft.Office.Tools.Common.v4.0.Utilities.dll" Source="$(var.AddinFiles)"></File>
+			</Component>
+
+			<Component Id="Microsoft.VisualStudio_Tools_Applications_Runtime_dll_component">
+				<File Id="Microsoft.VisualStudio.Tools_Applications_Runtime.dll" KeyPath="yes"
+							  Name="Microsoft.VisualStudio.Tools.Applications.Runtime.dll" Source="$(var.AddinFiles)">
+				</File>
+			</Component>
+		</ComponentGroup>
+	</Fragment>
+</Wix>

@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui" onLoad="Ribbon_Load">
+  <ribbon>
+    <tabs>
+      <tab idMso="TabHome">
+        <group id="MyGroup"
+               label="LL-Docx">
+          <button id="btnScan" label="Scan" size="large"  onAction="OnScanning" getImage="GetImages"/>
+          <toggleButton  id="btnPanel" label="Settings" getPressed="GetPressed" getImage="GetImages" size="large" onAction="ShowSetting"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>
+

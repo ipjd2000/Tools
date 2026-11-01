@@ -1,0 +1,9 @@
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.pfx
+packages/
+TestResults/
+local.settings.json
