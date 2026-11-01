@@ -1,0 +1,15 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "Gateway__TenantId": "<lozaip.com tenant GUID>",
+    "Gateway__Audience": "api://<gateway client id>,<gateway client id>",
+    "Gateway__RequiredScope": "DeepCheck.Use",
+    "Gateway__RequiredRole": "",
+    "Gateway__ClaudeProvider": "Foundry",
+    "Gateway__FoundryResource": "<Foundry resource name>",
+    "Gateway__Model": "claude-opus-5-5",
+    "Gateway__Effort": "high"
+  }
+}
