@@ -58,6 +58,11 @@ public sealed class DeepCheckHandler
                 ? HandlerResult.Error(403, ErrorCodes.Forbidden, "Your account isn't authorized for Deep Check.")
                 : HandlerResult.Error(401, ErrorCodes.Unauthorized, "Sign-in required.");
         }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _log.LogError("Deep Check token validation failed unexpectedly: {ErrorType}", ex.GetType().Name);
+            return HandlerResult.Error(503, ErrorCodes.UpstreamUnavailable, "Sign-in could not be verified. Try again shortly.");
+        }
 
         DeepCheckRequest request;
         try
@@ -100,6 +105,13 @@ public sealed class DeepCheckHandler
         {
             // Log only exception types: inner messages could echo request content.
             _log.LogError("Deep Check upstream failure: {Error} / {Inner}", ex.Message, ex.InnerException?.GetType().Name);
+            return Done(caller, started, count, chars, "upstream_unavailable", HandlerResult.Error(503, ErrorCodes.UpstreamUnavailable,
+                "The Claude service is unavailable. Try again shortly."));
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // Type name only: messages could echo request content.
+            _log.LogError("Deep Check unexpected failure: {ErrorType}", ex.GetType().Name);
             return Done(caller, started, count, chars, "upstream_unavailable", HandlerResult.Error(503, ErrorCodes.UpstreamUnavailable,
                 "The Claude service is unavailable. Try again shortly."));
         }

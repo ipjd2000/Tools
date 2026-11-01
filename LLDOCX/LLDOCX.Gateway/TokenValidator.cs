@@ -57,7 +57,6 @@ public sealed class EntraTokenValidator : ITokenValidator
             throw new AuthFailure(AuthFailureKind.Unauthenticated, "Missing bearer token.");
         string token = authorizationHeader.Substring(prefix.Length).Trim();
 
-        var config = await _config.GetConfigurationAsync(ct);
         var parameters = new TokenValidationParameters
         {
             ValidIssuers = new[]
@@ -66,10 +65,13 @@ public sealed class EntraTokenValidator : ITokenValidator
                 $"https://sts.windows.net/{_options.TenantId}/"
             },
             ValidAudiences = _options.Audiences,
-            IssuerSigningKeys = config.SigningKeys,
+            // The manager lets JsonWebTokenHandler refresh keys when it meets an unknown kid (Entra key rollover).
+            ConfigurationManager = _config as BaseConfigurationManager,
             ValidateLifetime = true,
             ClockSkew = TimeSpan.FromMinutes(2)
         };
+        if (parameters.ConfigurationManager == null) // custom manager: fall back to a key snapshot
+            parameters.IssuerSigningKeys = (await _config.GetConfigurationAsync(ct)).SigningKeys;
         TokenValidationResult result = await _handler.ValidateTokenAsync(token, parameters);
         if (!result.IsValid) throw new AuthFailure(AuthFailureKind.Unauthenticated, "Invalid token.");
 

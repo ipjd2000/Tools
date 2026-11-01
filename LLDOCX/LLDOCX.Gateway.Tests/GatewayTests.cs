@@ -157,6 +157,22 @@ public class TokenValidatorTests
     }
 
     [TestMethod]
+    public async Task Token_signed_with_an_unknown_key_is_unauthenticated()
+    {
+        var otherKey = new RsaSecurityKey(RSA.Create(2048)) { KeyId = "other-key" };
+        var claims = new Dictionary<string, object> { ["tid"] = Tenant, ["oid"] = "oid-1", ["scp"] = "DeepCheck.Use" };
+        string token = new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        {
+            Issuer = $"https://login.microsoftonline.com/{Tenant}/v2.0",
+            Audience = Audience,
+            Claims = claims,
+            Expires = DateTime.UtcNow.AddMinutes(30),
+            SigningCredentials = new SigningCredentials(otherKey, SecurityAlgorithms.RsaSha256)
+        });
+        Assert.AreEqual(AuthFailureKind.Unauthenticated, await Fails(Validator(Options()), "Bearer " + token));
+    }
+
+    [TestMethod]
     public async Task Missing_scope_is_forbidden()
     {
         Assert.AreEqual(AuthFailureKind.Forbidden, await Fails(Validator(Options()), "Bearer " + Token(c => c["scp"] = "User.Read")));
@@ -296,6 +312,31 @@ public class DeepCheckHandlerTests
     {
         _reviewer.Result = () => ReviewResult.Ok("""{"findings":"nope"}""");
         Assert.AreEqual(ErrorCodes.BadUpstreamResponse, Error(await NewHandler().HandleAsync("Bearer x", Body(), CancellationToken.None)).Code);
+    }
+
+    [TestMethod]
+    public async Task Unexpected_reviewer_exception_is_503_and_does_not_log_its_message()
+    {
+        _reviewer.Result = () => throw new InvalidOperationException(Secret);
+        var r = await NewHandler().HandleAsync("Bearer x", Body(), CancellationToken.None);
+        Assert.AreEqual(503, r.Status);
+        Assert.AreEqual(ErrorCodes.UpstreamUnavailable, Error(r).Code);
+        Assert.IsFalse(_log.Lines.Any(l => l.Contains(Secret)), string.Join("\n", _log.Lines));
+    }
+
+    sealed class ThrowingValidator : ITokenValidator
+    {
+        public Task<CallerIdentity> ValidateAsync(string authorizationHeader, CancellationToken ct) =>
+            throw new HttpRequestException("metadata fetch failed " + Secret);
+    }
+
+    [TestMethod]
+    public async Task Unexpected_validator_exception_is_503()
+    {
+        var handler = new DeepCheckHandler(_options, new ThrowingValidator(), new UserRateLimiter(30, () => DateTime.UtcNow), _reviewer, _log);
+        var r = await handler.HandleAsync("Bearer x", Body(), CancellationToken.None);
+        Assert.AreEqual(503, r.Status);
+        Assert.IsFalse(_log.Lines.Any(l => l.Contains(Secret)), string.Join("\n", _log.Lines));
     }
 
     [TestMethod]
